@@ -1,0 +1,29 @@
+{
+  "name": "bellbound",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite --host 127.0.0.1",
+    "build": "tsc && vite build",
+    "preview": "vite preview --host 127.0.0.1",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:e2e:install": "cross-env PLAYWRIGHT_BROWSERS_PATH=.ms-playwright playwright install chromium",
+    "test:e2e": "cross-env PLAYWRIGHT_BROWSERS_PATH=.ms-playwright playwright test"
+  },
+  "dependencies": {
+    "@pixiv/three-vrm": "^3.4.0",
+    "lil-gui": "^0.20.0",
+    "three": "^0.176.0"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.52.0",
+    "@types/node": "^25.6.0",
+    "@types/three": "^0.184.0",
+    "cross-env": "^7.0.3",
+    "typescript": "^5.8.3",
+    "vite": "^6.3.4",
+    "vitest": "^3.1.2"
+  }
+}

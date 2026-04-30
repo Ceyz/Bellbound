@@ -1,0 +1,61 @@
+# Dependencies
+node_modules/
+.npm-cache/
+.npm-global/
+
+# Build output
+dist/
+.vite/
+coverage/
+
+# Test artifacts
+.ms-playwright/
+test-results/
+playwright-report/
+
+# Logs
+*.log
+tmp_*.out.log
+tmp_*.err.log
+tmp_*
+scripts/overnight_logs/
+scripts/hunyuan_overnight.log
+scripts/__pycache__/
+
+# Generated 3D assets (Hunyuan / SF3D pipeline outputs — regenerable)
+assets/glb/
+assets/generated_3d/
+assets/anims/
+assets/concepts/
+assets/imagegen/
+assets/manifests/
+assets/obj/
+assets/rigs/
+assets/textures/
+
+# Binary 3D formats anywhere in repo
+*.glb
+*.vrm
+*.fbx
+*.obj
+*.blend
+*.blend1
+*.usd
+*.usdz
+
+# Internal docs / roadmaps
+docs/
+.screens/
+_archive/
+tmp_inspect/
+venv*_freeze_*.txt
+
+# OS / editor
+.DS_Store
+Thumbs.db
+*.swp
+.idea/
+.vscode/
+
+# Local config (per-user)
+.claude/settings.local.json

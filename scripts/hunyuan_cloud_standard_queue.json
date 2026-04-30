@@ -1,0 +1,72 @@
+[
+  {
+    "name": "cap_burgundy_with_logo",
+    "source_path": "Z:/Islebound/assets/concepts/traits/3d_regen_sources/hair_with_logo/cap_burgundy_with_logo.png",
+    "decimate": 80000,
+    "paint_mode": "Standard",
+    "category": "hair_with_logo"
+  },
+  {
+    "name": "beanie_blue_with_logo",
+    "source_path": "Z:/Islebound/assets/concepts/traits/3d_regen_sources/hair_with_logo/beanie_blue_with_logo.png",
+    "decimate": 80000,
+    "paint_mode": "Standard",
+    "category": "hair_with_logo"
+  },
+  {
+    "name": "bucket_with_hair_and_logo",
+    "source_path": "Z:/Islebound/assets/concepts/traits/3d_regen_sources/hair_with_logo/bucket_with_hair_and_logo.png",
+    "decimate": 80000,
+    "paint_mode": "Standard",
+    "category": "hair_with_logo"
+  },
+  {
+    "name": "hair_curly_brown",
+    "source_path": "Z:/Islebound/assets/concepts/traits/3d_regen_sources/hair/hair_curly_brown_rep.png",
+    "decimate": 80000,
+    "paint_mode": "Standard",
+    "category": "hair_family_standard"
+  },
+  {
+    "name": "hair_dread_black",
+    "source_path": "Z:/Islebound/assets/concepts/traits/3d_regen_sources/hair/hair_dread_black_rep.png",
+    "decimate": 80000,
+    "paint_mode": "Standard",
+    "category": "hair_family_standard"
+  },
+  {
+    "name": "hair_hide_eye_ash",
+    "source_path": "Z:/Islebound/assets/concepts/traits/3d_regen_sources/hair/hair_hide_eye_ash_rep.png",
+    "decimate": 80000,
+    "paint_mode": "Standard",
+    "category": "hair_family_standard"
+  },
+  {
+    "name": "hair_long_curls_brown",
+    "source_path": "Z:/Islebound/assets/concepts/traits/3d_regen_sources/hair/hair_long_curls_brown_rep.png",
+    "decimate": 80000,
+    "paint_mode": "Standard",
+    "category": "hair_family_standard"
+  },
+  {
+    "name": "hair_shaggy_center_black",
+    "source_path": "Z:/Islebound/assets/concepts/traits/3d_regen_sources/hair/hair_shaggy_center_black_rep.png",
+    "decimate": 80000,
+    "paint_mode": "Standard",
+    "category": "hair_family_standard"
+  },
+  {
+    "name": "hair_side_swept_black",
+    "source_path": "Z:/Islebound/assets/concepts/traits/3d_regen_sources/hair/hair_side_swept_black_rep.png",
+    "decimate": 80000,
+    "paint_mode": "Standard",
+    "category": "hair_family_standard"
+  },
+  {
+    "name": "hair_red_beanie_bangs",
+    "source_path": "Z:/Islebound/assets/concepts/traits/3d_regen_sources/hair/hair_red_beanie_bangs_rep.png",
+    "decimate": 80000,
+    "paint_mode": "Standard",
+    "category": "hair_family_standard"
+  }
+]

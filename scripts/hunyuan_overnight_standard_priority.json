@@ -1,0 +1,37 @@
+[
+  {
+    "name": "chr_chibi_base_v2",
+    "source_path": "Z:/Islebound/assets/concepts/image_to_cad_sources/chr_chibi_base_v2_concept.png",
+    "decimate": 50000,
+    "paint_mode": "Standard",
+    "category": "character"
+  },
+  {
+    "name": "jacket_plain",
+    "source_path": "Z:/Islebound/assets/concepts/traits/outfits/generated_sheets_from_real_refs/jacket_plain_isolated.png",
+    "decimate": 80000,
+    "paint_mode": "Standard",
+    "category": "outfit"
+  },
+  {
+    "name": "pants_plain",
+    "source_path": "Z:/Islebound/assets/concepts/traits/outfits/generated_sheets_from_real_refs/pants_plain_alone_isolated.png",
+    "decimate": 80000,
+    "paint_mode": "Standard",
+    "category": "outfit"
+  },
+  {
+    "name": "shoe_left_loafer",
+    "source_path": "Z:/Islebound/assets/concepts/traits/outfits/generated_sheets_from_real_refs/shoe_left_loafer_isolated.png",
+    "decimate": 80000,
+    "paint_mode": "Standard",
+    "category": "outfit"
+  },
+  {
+    "name": "glasses_round_wire",
+    "source_path": "Z:/Islebound/assets/concepts/traits/outfits/generated_sheets_from_real_refs/glasses_round_wire_isolated.png",
+    "decimate": 80000,
+    "paint_mode": "Standard",
+    "category": "glasses"
+  }
+]

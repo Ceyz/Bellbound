@@ -1,0 +1,387 @@
+[
+    {
+        "name":  "jacket_plain",
+        "source_path":  "Z:/Islebound/assets/concepts/traits/outfits/generated_sheets_from_real_refs/jacket_plain_isolated.png",
+        "decimate":  80000,
+        "paint_mode":  "Turbo",
+        "category":  "outfit"
+    },
+    {
+        "name":  "jacket_check",
+        "source_path":  "Z:/Islebound/assets/concepts/traits/outfits/generated_sheets_from_real_refs/jacket_check_isolated.png",
+        "decimate":  80000,
+        "paint_mode":  "Turbo",
+        "category":  "outfit"
+    },
+    {
+        "name":  "jacket_double",
+        "source_path":  "Z:/Islebound/assets/concepts/traits/outfits/generated_sheets_from_real_refs/jacket_double_isolated.png",
+        "decimate":  80000,
+        "paint_mode":  "Turbo",
+        "category":  "outfit"
+    },
+    {
+        "name":  "jacket_houndtooth",
+        "source_path":  "Z:/Islebound/assets/concepts/traits/outfits/generated_sheets_from_real_refs/jacket_houndtooth_isolated.png",
+        "decimate":  80000,
+        "paint_mode":  "Turbo",
+        "category":  "outfit"
+    },
+    {
+        "name":  "jacket_stripe",
+        "source_path":  "Z:/Islebound/assets/concepts/traits/outfits/generated_sheets_from_real_refs/jacket_stripe_isolated.png",
+        "decimate":  80000,
+        "paint_mode":  "Turbo",
+        "category":  "outfit"
+    },
+    {
+        "name":  "pants_plain",
+        "source_path":  "Z:/Islebound/assets/concepts/traits/outfits/generated_sheets_from_real_refs/pants_plain_alone_isolated.png",
+        "decimate":  80000,
+        "paint_mode":  "Turbo",
+        "category":  "outfit"
+    },
+    {
+        "name":  "pants_check",
+        "source_path":  "Z:/Islebound/assets/concepts/traits/outfits/generated_sheets_from_real_refs/pants_check_alone_isolated.png",
+        "decimate":  80000,
+        "paint_mode":  "Turbo",
+        "category":  "outfit"
+    },
+    {
+        "name":  "pants_double_camel",
+        "source_path":  "Z:/Islebound/assets/concepts/traits/outfits/generated_sheets_from_real_refs/pants_double_camel_alone_isolated.png",
+        "decimate":  80000,
+        "paint_mode":  "Turbo",
+        "category":  "outfit"
+    },
+    {
+        "name":  "pants_houndtooth",
+        "source_path":  "Z:/Islebound/assets/concepts/traits/outfits/generated_sheets_from_real_refs/pants_houndtooth_alone_isolated.png",
+        "decimate":  80000,
+        "paint_mode":  "Turbo",
+        "category":  "outfit"
+    },
+    {
+        "name":  "pants_stripe",
+        "source_path":  "Z:/Islebound/assets/concepts/traits/outfits/generated_sheets_from_real_refs/pants_stripe_alone_isolated.png",
+        "decimate":  80000,
+        "paint_mode":  "Turbo",
+        "category":  "outfit"
+    },
+    {
+        "name":  "shoe_left_loafer",
+        "source_path":  "Z:/Islebound/assets/concepts/traits/outfits/generated_sheets_from_real_refs/shoe_left_black_penny_loafer_isolated.png",
+        "decimate":  80000,
+        "paint_mode":  "Turbo",
+        "category":  "outfit"
+    },
+    {
+        "name":  "ear_bear_left",
+        "source_path":  "Z:/Islebound/assets/concepts/traits/3d_regen_sources/animal_ears/ear_bear_left_single.png",
+        "decimate":  80000,
+        "paint_mode":  "Turbo",
+        "category":  "animal_ears"
+    },
+    {
+        "name":  "ear_bunny_left",
+        "source_path":  "Z:/Islebound/assets/concepts/traits/3d_regen_sources/animal_ears/ear_bunny_left_single.png",
+        "decimate":  80000,
+        "paint_mode":  "Turbo",
+        "category":  "animal_ears"
+    },
+    {
+        "name":  "ear_cat_left",
+        "source_path":  "Z:/Islebound/assets/concepts/traits/3d_regen_sources/animal_ears/ear_cat_left_single.png",
+        "decimate":  80000,
+        "paint_mode":  "Turbo",
+        "category":  "animal_ears"
+    },
+    {
+        "name":  "ear_cowhorn_left",
+        "source_path":  "Z:/Islebound/assets/concepts/traits/3d_regen_sources/animal_ears/hunyuan_split_redo/cowhorn_left_single_hunyuan_safe.png",
+        "decimate":  80000,
+        "paint_mode":  "Turbo",
+        "category":  "animal_ears"
+    },
+    {
+        "name":  "glasses_aviator",
+        "source_path":  "Z:/Islebound/assets/concepts/traits/3d_regen_sources/glasses/glasses_aviator_clear_3q.png",
+        "decimate":  80000,
+        "paint_mode":  "Turbo",
+        "category":  "glasses"
+    },
+    {
+        "name":  "glasses_round_circle",
+        "source_path":  "Z:/Islebound/assets/concepts/traits/3d_regen_sources/glasses/glasses_round_circle_thick_clear_3q.png",
+        "decimate":  80000,
+        "paint_mode":  "Turbo",
+        "category":  "glasses"
+    },
+    {
+        "name":  "glasses_round_wire",
+        "source_path":  "Z:/Islebound/assets/concepts/traits/3d_regen_sources/glasses/glasses_round_wire_thick_clear_3q.png",
+        "decimate":  80000,
+        "paint_mode":  "Turbo",
+        "category":  "glasses"
+    },
+    {
+        "name":  "glasses_square",
+        "source_path":  "Z:/Islebound/assets/concepts/traits/3d_regen_sources/glasses/glasses_square_thick_clear_3q.png",
+        "decimate":  80000,
+        "paint_mode":  "Turbo",
+        "category":  "glasses"
+    },
+    {
+        "name":  "goggles",
+        "source_path":  "Z:/Islebound/assets/concepts/traits/3d_regen_sources/glasses/goggles_thick_clear_3q.png",
+        "decimate":  80000,
+        "paint_mode":  "Turbo",
+        "category":  "glasses"
+    },
+    {
+        "name":  "neck_bells",
+        "source_path":  "Z:/Islebound/assets/concepts/traits/3d_regen_sources/neck/neck_bells_choker_source.png",
+        "decimate":  80000,
+        "paint_mode":  "Turbo",
+        "category":  "neck"
+    },
+    {
+        "name":  "neck_dragon",
+        "source_path":  "Z:/Islebound/assets/concepts/traits/3d_regen_sources/neck/neck_dragon_choker_source.png",
+        "decimate":  80000,
+        "paint_mode":  "Turbo",
+        "category":  "neck"
+    },
+    {
+        "name":  "neck_tribal_simplified",
+        "source_path":  "Z:/Islebound/assets/concepts/traits/3d_regen_sources/neck/neck_tribal_printed_band_v1_source.png",
+        "decimate":  80000,
+        "paint_mode":  "Turbo",
+        "category":  "neck"
+    },
+    {
+        "name":  "hair_knight_helmet",
+        "source_path":  "Z:/Islebound/assets/concepts/traits/hair/generated_sheets_from_real_refs/hair_trait_knighthelmet_corrected_v4.png",
+        "decimate":  80000,
+        "paint_mode":  "Turbo",
+        "category":  "hair_unique"
+    },
+    {
+        "name":  "hair_mohican_black",
+        "source_path":  "Z:/Islebound/assets/concepts/traits/3d_regen_sources/hair/hair_mohican_black_rep.png",
+        "decimate":  80000,
+        "paint_mode":  "Turbo",
+        "category":  "hair_family"
+    },
+    {
+        "name":  "hair_pompadour_black",
+        "source_path":  "Z:/Islebound/assets/concepts/traits/3d_regen_sources/hair/hair_pompadour_black_rep.png",
+        "decimate":  80000,
+        "paint_mode":  "Turbo",
+        "category":  "hair_family"
+    },
+    {
+        "name":  "hair_slicked_back_blond",
+        "source_path":  "Z:/Islebound/assets/concepts/traits/3d_regen_sources/hair/hair_slicked_back_blond_rep.png",
+        "decimate":  80000,
+        "paint_mode":  "Turbo",
+        "category":  "hair_family"
+    },
+    {
+        "name":  "hair_spiky_black",
+        "source_path":  "Z:/Islebound/assets/concepts/traits/3d_regen_sources/hair/hair_spiky_black_rep.png",
+        "decimate":  80000,
+        "paint_mode":  "Turbo",
+        "category":  "hair_family"
+    },
+    {
+        "name":  "hair_fedora_long",
+        "source_path":  "Z:/Islebound/assets/concepts/traits/3d_regen_sources/hair/hair_fedora_long_hair_rep.png",
+        "decimate":  80000,
+        "paint_mode":  "Turbo",
+        "category":  "hair_family"
+    },
+    {
+        "name":  "hair_nook",
+        "source_path":  "Z:/Islebound/assets/concepts/traits/3d_regen_sources/hair/hair_nook.png",
+        "decimate":  80000,
+        "paint_mode":  "Turbo",
+        "category":  "hair_unique"
+    },
+    {
+        "name":  "hair_pepe",
+        "source_path":  "Z:/Islebound/assets/concepts/traits/3d_regen_sources/hair/hair_pepe.png",
+        "decimate":  80000,
+        "paint_mode":  "Turbo",
+        "category":  "hair_unique"
+    },
+    {
+        "name":  "mouth_bear",
+        "source_path":  "Z:/Islebound/assets/concepts/traits/3d_regen_sources/mouth/mouth_bear.png",
+        "decimate":  80000,
+        "paint_mode":  "Turbo",
+        "category":  "mouth"
+    },
+    {
+        "name":  "mouth_bunny",
+        "source_path":  "Z:/Islebound/assets/concepts/traits/3d_regen_sources/mouth/mouth_bunny.png",
+        "decimate":  80000,
+        "paint_mode":  "Turbo",
+        "category":  "mouth"
+    },
+    {
+        "name":  "mouth_cat",
+        "source_path":  "Z:/Islebound/assets/concepts/traits/3d_regen_sources/mouth/mouth_cat.png",
+        "decimate":  80000,
+        "paint_mode":  "Turbo",
+        "category":  "mouth"
+    },
+    {
+        "name":  "mouth_cow",
+        "source_path":  "Z:/Islebound/assets/concepts/traits/3d_regen_sources/mouth/mouth_cow.png",
+        "decimate":  80000,
+        "paint_mode":  "Turbo",
+        "category":  "mouth"
+    },
+    {
+        "name":  "mouth_doge",
+        "source_path":  "Z:/Islebound/assets/concepts/traits/3d_regen_sources/mouth/mouth_doge.png",
+        "decimate":  80000,
+        "paint_mode":  "Turbo",
+        "category":  "mouth"
+    },
+    {
+        "name":  "mouth_pepe",
+        "source_path":  "Z:/Islebound/assets/concepts/traits/3d_regen_sources/mouth/mouth_pepe.png",
+        "decimate":  80000,
+        "paint_mode":  "Turbo",
+        "category":  "mouth"
+    },
+    {
+        "name":  "mouth_blackmask",
+        "source_path":  "Z:/Islebound/assets/concepts/traits/3d_regen_sources/mouth/mouth_blackmask.png",
+        "decimate":  80000,
+        "paint_mode":  "Turbo",
+        "category":  "mouth"
+    },
+    {
+        "name":  "mouth_whitemask",
+        "source_path":  "Z:/Islebound/assets/concepts/traits/3d_regen_sources/mouth/mouth_whitemask.png",
+        "decimate":  80000,
+        "paint_mode":  "Turbo",
+        "category":  "mouth"
+    },
+    {
+        "name":  "mouth_bandana",
+        "source_path":  "Z:/Islebound/assets/concepts/traits/3d_regen_sources/mouth/mouth_bandana.png",
+        "decimate":  80000,
+        "paint_mode":  "Turbo",
+        "category":  "mouth"
+    },
+    {
+        "name":  "mouth_wolfmask",
+        "source_path":  "Z:/Islebound/assets/concepts/traits/3d_regen_sources/mouth/mouth_wolfmask.png",
+        "decimate":  80000,
+        "paint_mode":  "Turbo",
+        "category":  "mouth"
+    },
+    {
+        "name":  "mouth_jokermask",
+        "source_path":  "Z:/Islebound/assets/concepts/traits/3d_regen_sources/mouth/mouth_jokermask.png",
+        "decimate":  80000,
+        "paint_mode":  "Turbo",
+        "category":  "mouth"
+    },
+    {
+        "name":  "hair_autism_cap",
+        "source_path":  "Z:/Islebound/assets/concepts/traits/3d_regen_sources/hair/hair_autism_cap.png",
+        "decimate":  80000,
+        "paint_mode":  "Turbo",
+        "category":  "hair_unique"
+    },
+    {
+        "name":  "hair_bucket_rare",
+        "source_path":  "Z:/Islebound/assets/concepts/traits/3d_regen_sources/hair/hair_bucket_rare.png",
+        "decimate":  80000,
+        "paint_mode":  "Turbo",
+        "category":  "hair_unique"
+    },
+    {
+        "name":  "hair_halo",
+        "source_path":  "Z:/Islebound/assets/concepts/traits/3d_regen_sources/hair/hair_halo.png",
+        "decimate":  80000,
+        "paint_mode":  "Turbo",
+        "category":  "hair_unique"
+    },
+    {
+        "name":  "earring_gold",
+        "source_path":  "Z:/Islebound/assets/concepts/traits/3d_regen_sources/accessories/earring_gold.png",
+        "decimate":  80000,
+        "paint_mode":  "Turbo",
+        "category":  "accessories"
+    },
+    {
+        "name":  "earring_ball",
+        "source_path":  "Z:/Islebound/assets/concepts/traits/3d_regen_sources/accessories/earring_ball.png",
+        "decimate":  80000,
+        "paint_mode":  "Turbo",
+        "category":  "accessories"
+    },
+    {
+        "name":  "earring_star",
+        "source_path":  "Z:/Islebound/assets/concepts/traits/3d_regen_sources/accessories/earring_star.png",
+        "decimate":  80000,
+        "paint_mode":  "Turbo",
+        "category":  "accessories"
+    },
+    {
+        "name":  "earring_cross",
+        "source_path":  "Z:/Islebound/assets/concepts/traits/3d_regen_sources/accessories/earring_cross.png",
+        "decimate":  80000,
+        "paint_mode":  "Turbo",
+        "category":  "accessories"
+    },
+    {
+        "name":  "earring_bells",
+        "source_path":  "Z:/Islebound/assets/concepts/traits/3d_regen_sources/accessories/earring_bells.png",
+        "decimate":  80000,
+        "paint_mode":  "Turbo",
+        "category":  "accessories"
+    },
+    {
+        "name":  "earring_horn",
+        "source_path":  "Z:/Islebound/assets/concepts/traits/3d_regen_sources/accessories/earring_horn.png",
+        "decimate":  80000,
+        "paint_mode":  "Turbo",
+        "category":  "accessories"
+    },
+    {
+        "name":  "glasses_cycle",
+        "source_path":  "Z:/Islebound/assets/concepts/traits/3d_regen_sources/glasses/glasses_cycle_clear_3q.png",
+        "decimate":  80000,
+        "paint_mode":  "Turbo",
+        "category":  "glasses"
+    },
+    {
+        "name":  "ear_dog_left",
+        "source_path":  "Z:/Islebound/assets/concepts/traits/3d_regen_sources/animal_ears/hunyuan_split_redo/ear_dog_left_single_nopeg_v4_premium.png",
+        "decimate":  80000,
+        "paint_mode":  "Turbo",
+        "category":  "animal_ears"
+    },
+    {
+        "name":  "dress_shirt",
+        "source_path":  "Z:/Islebound/assets/concepts/traits/outfits/generated_sheets_from_real_refs/shirt_dress_isolated.png",
+        "decimate":  80000,
+        "paint_mode":  "Turbo",
+        "category":  "outfit"
+    },
+    {
+        "name":  "tie_solid_black",
+        "source_path":  "Z:/Islebound/assets/concepts/traits/outfits/generated_sheets_from_real_refs/tie_solid_black_alone_isolated.png",
+        "decimate":  80000,
+        "paint_mode":  "Turbo",
+        "category":  "outfit"
+    }
+]
