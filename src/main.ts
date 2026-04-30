@@ -1,13 +1,13 @@
 import * as THREE from 'three';
 import './style.css';
-import { createIslandScene, tickIslandScene, updateIslandRollingWorld } from './scene/createIslandScene';
+import { createIslandScene, rebuildTerrain, tickIslandScene, updateIslandRollingWorld } from './scene/createIslandScene';
 import { updatePlayerSurfaceDecals } from './scene/playerSurfaceDecals';
 import { rollingConfig, invalidateRollingCache } from './scene/rollingWorld';
 import {
   getPlayerStandingHeight,
   pushPlayerOutOfRiver,
 } from './scene/heightmap';
-import { getTerrainGrid } from './scene/terrain/TerrainGrid';
+import { Surface, Tier, getTerrainGrid } from './scene/terrain/TerrainGrid';
 import type { BuiltStructure } from './scene/terrain/builtStructure';
 import { BuildMode } from './buildMode/buildMode';
 import { mountBuildModeUI } from './buildMode/buildModeUI';
@@ -41,6 +41,8 @@ declare global {
       setAutoCycle: (enabled: boolean) => void;
       setPlayerPosition: (x: number, z: number) => void;
       setTimeOfDay: (timeOfDay: number) => void;
+      getRollingCurvature: () => number;
+      getCursorState: () => null | { visible: boolean; position: [number, number, number] };
     };
   }
 }
@@ -172,6 +174,15 @@ window.__BELLBOUND_DEBUG__ = {
     params.timeOfDay = THREE.MathUtils.euclideanModulo(timeOfDay, 1);
     params.autoCycle = false;
   },
+  getRollingCurvature: () => rollingConfig.curvature,
+  getCursorState: () => {
+    const cursor = island.scene.getObjectByName('build-cursor');
+    if (!cursor) return null;
+    return {
+      visible: cursor.visible,
+      position: cursor.position.toArray() as [number, number, number],
+    };
+  },
 };
 cameraFocus.copy(island.player.position).add(new THREE.Vector3(0, 0.82, 0));
 
@@ -189,11 +200,122 @@ void loadPlayerCharacter().then((char) => {
   console.error('Failed to load player character:', err);
 });
 
-// BuildMode shell mounted now (no tools registered yet — Step 5 of the
-// terraforming refactor plugs in TerraformTool here). Keeps the UI scaffolding,
-// pointer raycaster, and listener pattern alive between refactor steps.
+// BuildMode shell + Step 5 terraforming tools (cliff_raise / cliff_lower).
+// Each tool calls into the TerrainGrid edit API and triggers a full mesh +
+// surface-map rebuild via `rebuildTerrain(island)`. canApply mirrors the AC
+// rules without mutating the grid (used for the cursor green/red preview).
 const buildMode = new BuildMode(island);
 mountBuildModeUI(buildMode);
+
+const terraformGrid = getTerrainGrid();
+
+// AC-style terraforming view: while a tool is active, flatten the world (kill
+// the parabolic rolling warp) AND switch the camera to a steep top-down
+// perspective. Without the camera switch, raised plateaus visually occlude
+// the cells BEHIND them, so the user can never aim at those — the raycast
+// hits the plateau top first. Steep top-down minimizes the occluded area
+// because most cells are seen from nearly straight above.
+let _savedRollingCurvature: number | null = null;
+let _savedCameraPitch: number | null = null;
+let _savedCameraDistance: number | null = null;
+const BUILD_MODE_CAMERA_PITCH = 1.20;     // ≈ 69° down — close to top-down without losing depth cues
+const BUILD_MODE_CAMERA_DISTANCE = 22;    // a bit farther so a wider area is visible
+buildMode.onChange((state) => {
+  if (state.active && _savedRollingCurvature === null) {
+    _savedRollingCurvature = rollingConfig.curvature;
+    rollingConfig.curvature = 0;
+    invalidateRollingCache();
+    _savedCameraPitch = params.cameraPitch;
+    _savedCameraDistance = params.cameraDistance;
+    params.cameraPitch = BUILD_MODE_CAMERA_PITCH;
+    params.cameraDistance = BUILD_MODE_CAMERA_DISTANCE;
+  } else if (!state.active && _savedRollingCurvature !== null) {
+    rollingConfig.curvature = _savedRollingCurvature;
+    _savedRollingCurvature = null;
+    invalidateRollingCache();
+    if (_savedCameraPitch !== null) params.cameraPitch = _savedCameraPitch;
+    if (_savedCameraDistance !== null) params.cameraDistance = _savedCameraDistance;
+    _savedCameraPitch = null;
+    _savedCameraDistance = null;
+  }
+});
+
+buildMode.registerTool({
+  kind: 'cliff_raise',
+  label: 'Élever falaise',
+  canApply: (cx, cz) => {
+    if (!terraformGrid.cellInBounds(cx, cz)) return false;
+    if (terraformGrid.getSurface(cx, cz) !== Surface.LAND) return false;
+    return terraformGrid.getTier(cx, cz) < Tier.T3;
+  },
+  apply: (cx, cz) => {
+    const err = terraformGrid.raiseCell(cx, cz);
+    if (err) return err.reason;
+    rebuildTerrain(island);
+    return null;
+  },
+});
+
+buildMode.registerTool({
+  kind: 'cliff_lower',
+  label: 'Abaisser falaise',
+  canApply: (cx, cz) => {
+    if (!terraformGrid.cellInBounds(cx, cz)) return false;
+    if (terraformGrid.getSurface(cx, cz) !== Surface.LAND) return false;
+    if (terraformGrid.getTier(cx, cz) <= Tier.T0) return false;
+    // No 4-neighbor at strictly higher tier (cantilever rule).
+    const t = terraformGrid.getTier(cx, cz);
+    for (const [dx, dz] of [[1, 0], [-1, 0], [0, 1], [0, -1]] as const) {
+      if (terraformGrid.cellInBounds(cx + dx, cz + dz)
+        && terraformGrid.getTier(cx + dx, cz + dz) > t) return false;
+    }
+    return true;
+  },
+  apply: (cx, cz) => {
+    const err = terraformGrid.lowerCell(cx, cz);
+    if (err) return err.reason;
+    rebuildTerrain(island);
+    return null;
+  },
+});
+
+buildMode.registerTool({
+  kind: 'water_dig',
+  label: 'Creuser eau',
+  canApply: (cx, cz) => {
+    if (!terraformGrid.cellInBounds(cx, cz)) return false;
+    if (terraformGrid.getSurface(cx, cz) !== Surface.LAND) return false;
+    // No 4-neighbor at strictly higher tier (cliff foot rule).
+    const t = terraformGrid.getTier(cx, cz);
+    for (const [dx, dz] of [[1, 0], [-1, 0], [0, 1], [0, -1]] as const) {
+      if (!terraformGrid.cellInBounds(cx + dx, cz + dz)) continue;
+      if (terraformGrid.getSurface(cx + dx, cz + dz) === Surface.LAND
+        && terraformGrid.getTier(cx + dx, cz + dz) > t) return false;
+    }
+    return true;
+  },
+  apply: (cx, cz) => {
+    const err = terraformGrid.digFreshwater(cx, cz);
+    if (err) return err.reason;
+    rebuildTerrain(island);
+    return null;
+  },
+});
+
+buildMode.registerTool({
+  kind: 'water_fill',
+  label: 'Boucher eau',
+  canApply: (cx, cz) => {
+    if (!terraformGrid.cellInBounds(cx, cz)) return false;
+    return terraformGrid.getSurface(cx, cz) === Surface.FRESHWATER;
+  },
+  apply: (cx, cz) => {
+    const err = terraformGrid.fillFreshwater(cx, cz);
+    if (err) return err.reason;
+    rebuildTerrain(island);
+    return null;
+  },
+});
 
 window.addEventListener('keydown', (event) => {
   if (event.code === 'Escape' && buildMode.isActive()) {
@@ -224,16 +346,21 @@ sceneCanvas.addEventListener('pointerdown', () => {
   footstepAudio.unlock();
 });
 
+// Track pointer unconditionally so the cursor mesh is positioned the moment
+// the user enters a tool, even if they haven't moved the mouse since the
+// page loaded (otherwise tryPlace would silently no-op on the first click).
 sceneCanvas.addEventListener('pointermove', (event) => {
-  if (buildMode.isActive()) {
-    buildMode.setPointer(event.clientX, event.clientY, sceneCanvas);
-  }
+  buildMode.setPointer(event.clientX, event.clientY, sceneCanvas);
 });
 sceneCanvas.addEventListener('click', (event) => {
-  if (buildMode.isActive()) {
-    buildMode.tryPlace();
-    event.preventDefault();
-  }
+  if (!buildMode.isActive()) return;
+  // The click event also carries a position. Snap the cursor to it before
+  // applying so the user can click anywhere on the canvas without first
+  // dragging the mouse to wake up pointermove.
+  buildMode.setPointer(event.clientX, event.clientY, sceneCanvas);
+  buildMode.update(island.camera);
+  buildMode.tryPlace();
+  event.preventDefault();
 });
 
 sceneCanvas.addEventListener('contextmenu', (event) => event.preventDefault());

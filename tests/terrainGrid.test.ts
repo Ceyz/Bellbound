@@ -315,6 +315,161 @@ describe('TerrainGrid — isTraversable', () => {
   });
 });
 
+describe('TerrainGrid — raiseCell / lowerCell (Step 5)', () => {
+  // Each test gets a fresh grid because edits mutate state.
+  function freshGrid(): TerrainGrid {
+    return TerrainGrid.bakeFromAnalytical();
+  }
+
+  it('raiseCell promotes a LAND T0 cell to T1', () => {
+    const grid = freshGrid();
+    // Center of island, deep grass, T0.
+    const cx = 47, cz = 39;
+    expect(grid.getTier(cx, cz)).toBe(Tier.T0);
+    expect(grid.raiseCell(cx, cz)).toBeNull();
+    expect(grid.getTier(cx, cz)).toBe(Tier.T1);
+  });
+
+  it('raiseCell stacks up to T3 then refuses', () => {
+    const grid = freshGrid();
+    const cx = 47, cz = 39;
+    expect(grid.raiseCell(cx, cz)).toBeNull(); // T0 → T1
+    expect(grid.raiseCell(cx, cz)).toBeNull(); // T1 → T2
+    expect(grid.raiseCell(cx, cz)).toBeNull(); // T2 → T3
+    expect(grid.getTier(cx, cz)).toBe(Tier.T3);
+    const result = grid.raiseCell(cx, cz);
+    expect(result?.reason).toBe('max_tier');
+    expect(grid.getTier(cx, cz)).toBe(Tier.T3);
+  });
+
+  it('raiseCell refuses OCEAN and FRESHWATER cells', () => {
+    const grid = freshGrid();
+    // River center
+    const [riverCx, riverCz] = grid.worldToCell(0, 5);
+    expect(grid.getSurface(riverCx, riverCz)).toBe(Surface.FRESHWATER);
+    expect(grid.raiseCell(riverCx, riverCz)?.reason).toBe('not_land');
+    // Out of bounds
+    expect(grid.raiseCell(-1, 0)?.reason).toBe('out_of_bounds');
+    expect(grid.raiseCell(0, GRID_D)?.reason).toBe('out_of_bounds');
+  });
+
+  it('lowerCell drops a LAND T1 cell to T0', () => {
+    const grid = freshGrid();
+    // Northwest cliff plateau cell, baked at T1.
+    const [cx, cz] = grid.worldToCell(-20, -15);
+    expect(grid.getTier(cx, cz)).toBe(Tier.T1);
+    expect(grid.lowerCell(cx, cz)).toBeNull();
+    expect(grid.getTier(cx, cz)).toBe(Tier.T0);
+  });
+
+  it('lowerCell refuses T0 (already at minimum)', () => {
+    const grid = freshGrid();
+    const cx = 47, cz = 39;
+    expect(grid.getTier(cx, cz)).toBe(Tier.T0);
+    expect(grid.lowerCell(cx, cz)?.reason).toBe('min_tier');
+  });
+
+  it('lowerCell refuses when a 4-neighbor is at strictly higher tier (cantilever)', () => {
+    const grid = freshGrid();
+    // Make a small column: raise a deep-inland cell to T2, then try to lower
+    // one of its 4-neighbors that is at T1. The neighbor at T1 has the column
+    // (T2) sitting on top of it on one side, so dropping the neighbor would
+    // leave the T2 cell cantilevered.
+    const cx = 47, cz = 39;
+    grid.raiseCell(cx, cz);          // T0 → T1
+    grid.raiseCell(cx, cz);          // T1 → T2
+    grid.raiseCell(cx + 1, cz);      // neighbor T0 → T1
+    // Now (cx+1, cz) is T1, with (cx, cz) at T2. Try to lower (cx+1, cz):
+    // its neighbor (cx, cz) is at T2 (strictly higher) → cantilever.
+    const result = grid.lowerCell(cx + 1, cz);
+    expect(result?.reason).toBe('cantilever');
+    expect(grid.getTier(cx + 1, cz)).toBe(Tier.T1); // unchanged
+  });
+
+  it('lowerCell refuses OCEAN / FRESHWATER and out-of-bounds', () => {
+    const grid = freshGrid();
+    const [riverCx, riverCz] = grid.worldToCell(0, 5);
+    expect(grid.lowerCell(riverCx, riverCz)?.reason).toBe('not_land');
+    expect(grid.lowerCell(-1, 0)?.reason).toBe('out_of_bounds');
+  });
+
+  it('every edit pushes a single-cell dirty rect that consumeDirtyRegions returns', () => {
+    const grid = freshGrid();
+    grid.consumeDirtyRegions(); // drain bake-time accidents
+    const cx = 47, cz = 39;
+    grid.raiseCell(cx, cz);
+    const regions = grid.consumeDirtyRegions();
+    expect(regions).toHaveLength(1);
+    expect(regions[0]).toEqual({ cxMin: cx, czMin: cz, cxMax: cx, czMax: cz });
+    // Drained.
+    expect(grid.consumeDirtyRegions()).toHaveLength(0);
+  });
+});
+
+describe('TerrainGrid — digFreshwater / fillFreshwater (Step 6)', () => {
+  function freshGrid(): TerrainGrid {
+    return TerrainGrid.bakeFromAnalytical();
+  }
+
+  it('digFreshwater turns a LAND T0 cell into FRESHWATER T0', () => {
+    const grid = freshGrid();
+    const cx = 47, cz = 39;
+    expect(grid.getSurface(cx, cz)).toBe(Surface.LAND);
+    expect(grid.digFreshwater(cx, cz)).toBeNull();
+    const after = grid.getCell(cx, cz);
+    expect(after.surface).toBe(Surface.FRESHWATER);
+    expect(after.tier).toBe(Tier.T0);
+  });
+
+  it('digFreshwater preserves the tier (T1 LAND → T1 FRESHWATER)', () => {
+    const grid = freshGrid();
+    const cx = 47, cz = 39;
+    grid.raiseCell(cx, cz); // T0 → T1
+    expect(grid.digFreshwater(cx, cz)).toBeNull();
+    expect(grid.getCell(cx, cz)).toEqual({ surface: Surface.FRESHWATER, tier: Tier.T1, path: 0 });
+  });
+
+  it('digFreshwater refuses at the foot of a cliff (4-neighbor strictly higher tier)', () => {
+    const grid = freshGrid();
+    const cx = 47, cz = 39;
+    grid.raiseCell(cx, cz);          // T0 → T1
+    // (cx + 1, cz) is still T0; digging there would put water at the foot of
+    // the T1 cell next to it, which is rejected.
+    expect(grid.digFreshwater(cx + 1, cz)?.reason).toBe('cliff_foot');
+  });
+
+  it('digFreshwater refuses non-LAND cells (FRESHWATER, OCEAN, out-of-bounds)', () => {
+    const grid = freshGrid();
+    const [riverCx, riverCz] = grid.worldToCell(0, 5);
+    expect(grid.digFreshwater(riverCx, riverCz)?.reason).toBe('not_land');
+    expect(grid.digFreshwater(-1, 0)?.reason).toBe('out_of_bounds');
+  });
+
+  it('fillFreshwater reverts FRESHWATER to LAND at the same tier', () => {
+    const grid = freshGrid();
+    const [cx, cz] = grid.worldToCell(0, 5); // existing river center, T0 freshwater
+    expect(grid.getSurface(cx, cz)).toBe(Surface.FRESHWATER);
+    expect(grid.fillFreshwater(cx, cz)).toBeNull();
+    const after = grid.getCell(cx, cz);
+    expect(after.surface).toBe(Surface.LAND);
+    expect(after.tier).toBe(Tier.T0);
+  });
+
+  it('fillFreshwater allows fully filling a pond (no source-preservation check)', () => {
+    const grid = freshGrid();
+    const cx = 47, cz = 39;
+    grid.digFreshwater(cx, cz); // 1×1 isolated pond
+    expect(grid.fillFreshwater(cx, cz)).toBeNull();
+    expect(grid.getSurface(cx, cz)).toBe(Surface.LAND);
+  });
+
+  it('fillFreshwater refuses non-FRESHWATER cells', () => {
+    const grid = freshGrid();
+    expect(grid.fillFreshwater(47, 39)?.reason).toBe('not_freshwater');
+    expect(grid.fillFreshwater(-1, 0)?.reason).toBe('out_of_bounds');
+  });
+});
+
 describe('TerrainGrid — forEachLandOceanEdge', () => {
   const grid = TerrainGrid.bakeFromAnalytical();
 

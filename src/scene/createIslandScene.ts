@@ -19,6 +19,7 @@ import {
   createFreshwaterStylizedMaterial,
   updateFreshwaterStylizedMaterial,
 } from './terrain/freshwaterStylizedMaterial';
+import { buildWaterfallMesh } from './terrain/waterfallMeshBuilder';
 import type { SurfaceTextureSet } from './proceduralTextures';
 import { loadSurfaceTextures } from './surfaceTextureLoader';
 import { createTerrainSplatMaterial, updateTerrainSplatMaterial } from './terrainSplatMaterial';
@@ -44,6 +45,7 @@ export interface IslandScene {
   playerBody: THREE.Mesh<THREE.CapsuleGeometry, THREE.MeshStandardMaterial>;
   rollingObjects: RollingObject[];
   freshwater: THREE.Mesh<THREE.BufferGeometry, THREE.MeshStandardMaterial>;
+  waterfalls: THREE.Mesh<THREE.BufferGeometry, THREE.MeshStandardMaterial>;
   scene: THREE.Scene;
   shoreWash: ShoreWashSystem;
   sky: SkySystem;
@@ -137,6 +139,12 @@ export function createIslandScene(): IslandScene {
   freshwater.receiveShadow = false;
   scene.add(freshwater);
 
+  // Waterfalls — auto-generated vertical sheets at every grid edge where a
+  // FRESHWATER cell drops to a lower neighbor. Reuses the freshwater material.
+  const waterfalls = buildWaterfallMesh(getTerrainGrid(), freshwaterMaterial);
+  waterfalls.receiveShadow = false;
+  scene.add(waterfalls);
+
   const cliffSideWalls = buildCliffSideMesh(getTerrainGrid(), surfaceTextures);
   scene.add(cliffSideWalls);
 
@@ -168,6 +176,9 @@ export function createIslandScene(): IslandScene {
   disableFrustumCullingForRolling(ground);
   disableFrustumCullingForRolling(water);
   disableFrustumCullingForRolling(freshwater);
+  // waterfalls share freshwater.material so the rolling patch is already on,
+  // just disable culling so the warp doesn't push them off-frame.
+  disableFrustumCullingForRolling(waterfalls);
 
   const cliffMaterials = new Set<THREE.MeshStandardMaterial>();
   cliffSideWalls.traverse((child) => {
@@ -252,6 +263,7 @@ export function createIslandScene(): IslandScene {
     freshwater,
     ground,
     obstacles,
+    waterfalls,
     player,
     playerBody,
     rollingObjects,
@@ -264,6 +276,104 @@ export function createIslandScene(): IslandScene {
     surfaceTextures,
     water,
   };
+}
+
+/**
+ * Rebuilds every grid-driven terrain artifact (ground mesh, cliff side mesh,
+ * freshwater mesh, surface maps) from the current `getTerrainGrid()`. Called
+ * after a TerraformTool edits the grid (Step 5+).
+ *
+ * Strategy: full rebuild MVP per plan §3.2. Geometries are disposed and
+ * replaced; surface maps are rebaked at full 512² resolution and the
+ * existing materials' uniform values are repointed to the new textures so
+ * the shader programs don't recompile. Step 6+ optimizes via dirty-rect
+ * partial rebuilds when the per-edit cost (~50ms estimated for 5k cells +
+ * 262k surface-map texels) becomes a UX issue.
+ */
+export function rebuildTerrain(island: IslandScene): void {
+  const grid = getTerrainGrid();
+
+  // 1. Re-bake surface maps from the current grid.
+  const newMaps = createSurfaceMaps();
+
+  // 2. Repoint material uniforms to new textures.
+  const groundUniforms = island.ground.material.userData.terrainUniforms as
+    | Record<string, THREE.IUniform> | undefined;
+  if (groundUniforms) {
+    groundUniforms.uSplatMap.value = newMaps.splatMap;
+    groundUniforms.uAoMap.value = newMaps.aoMap;
+    groundUniforms.uCliffEdgeMap.value = newMaps.cliffEdgeMap;
+    groundUniforms.uShoreMask.value = newMaps.shoreMask;
+    groundUniforms.uShoreDistanceMap.value = newMaps.shoreDistanceMap;
+  }
+  const waterUniforms = island.water.material.userData.waterUniforms as
+    | Record<string, THREE.IUniform> | undefined;
+  if (waterUniforms) {
+    waterUniforms.uRiverMask.value = newMaps.riverMask;
+    waterUniforms.uShoreDistanceMap.value = newMaps.shoreDistanceMap;
+  }
+
+  // 3. Dispose old surface map textures.
+  const oldMaps = island.surfaceMaps;
+  oldMaps.splatMap.dispose();
+  oldMaps.aoMap.dispose();
+  oldMaps.cliffEdgeMap.dispose();
+  oldMaps.shoreMask.dispose();
+  oldMaps.shoreDistanceMap.dispose();
+  oldMaps.riverMask.dispose();
+  oldMaps.oceanShoreMask.dispose();
+  island.surfaceMaps = newMaps;
+
+  // 4. Rebuild ground + freshwater geometries in place (keep mesh refs and
+  //    materials, just swap geometry).
+  const oldGroundGeo = island.ground.geometry;
+  const tmpGround = buildGroundMesh(grid, island.ground.material);
+  island.ground.geometry = tmpGround.geometry;
+  oldGroundGeo.dispose();
+
+  const oldFwGeo = island.freshwater.geometry;
+  const tmpFw = buildFreshwaterMesh(grid, island.freshwater.material);
+  island.freshwater.geometry = tmpFw.geometry;
+  oldFwGeo.dispose();
+
+  // Waterfalls regenerate from the same forEachTierDiscontinuity iteration.
+  const oldWfGeo = island.waterfalls.geometry;
+  const tmpWf = buildWaterfallMesh(grid, island.waterfalls.material);
+  island.waterfalls.geometry = tmpWf.geometry;
+  oldWfGeo.dispose();
+
+  // 5. Cliff side mesh: dispose all children + materials, then rebuild.
+  for (const child of [...island.cliffSideWalls.children]) {
+    if (child instanceof THREE.Mesh) {
+      child.geometry.dispose();
+      if (child.material instanceof THREE.Material) child.material.dispose();
+    }
+    island.cliffSideWalls.remove(child);
+  }
+  const newCliff = buildCliffSideMesh(grid, island.surfaceTextures);
+  for (const child of [...newCliff.children]) {
+    island.cliffSideWalls.add(child);
+  }
+
+  // 6. Re-apply rolling shader + ACNH lighting + shadow flags to the new cliff
+  //    materials (the freshly created cliff side mesh has un-patched materials).
+  const cliffMaterials = new Set<THREE.MeshStandardMaterial>();
+  island.cliffSideWalls.traverse((child) => {
+    if (child instanceof THREE.Mesh && child.material instanceof THREE.MeshStandardMaterial) {
+      cliffMaterials.add(child.material);
+    }
+  });
+  for (const material of cliffMaterials) {
+    applyRollingShaderTo(material);
+  }
+  applyAcnhLightingRecursive(island.cliffSideWalls);
+  island.cliffSideWalls.traverse((child) => {
+    if (child instanceof THREE.Mesh) child.castShadow = false;
+  });
+  disableFrustumCullingRecursive(island.cliffSideWalls);
+
+  // 7. Drain dirty rects from the grid so the next edit starts clean.
+  grid.consumeDirtyRegions();
 }
 
 function disableCastShadowRecursive(root: THREE.Object3D): void {

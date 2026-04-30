@@ -156,10 +156,13 @@ function refreshModalItems(modal: HTMLElement, buildMode: BuildMode, onClose: ()
   for (const item of buildMode.listItems()) {
     grid.appendChild(
       createItemCard(item, () => {
-        if (item.stock > 0) {
-          buildMode.enter(item.kind);
-          onClose();
-        }
+        // Stock-gated tools (legacy props) require stock > 0 to enter mode.
+        // Unlimited tools (terraforming, showStock === false) are always
+        // enterable — their stock field is meaningless and stays at 0.
+        const stockGated = item.showStock !== false;
+        if (stockGated && item.stock <= 0) return;
+        buildMode.enter(item.kind);
+        onClose();
       }),
     );
   }
@@ -169,8 +172,12 @@ function createItemCard(item: BuildItemInfo, onClick: () => void): HTMLElement {
   const card = document.createElement('button');
   card.type = 'button';
   card.className = 'build-item-card';
-  if (item.stock <= 0) card.classList.add('build-item-card-disabled');
-  card.disabled = item.stock <= 0;
+  // Tools with `showStock !== false` are stock-limited (legacy props); tools
+  // with showStock === false are unlimited (terraforming) and never disabled
+  // by stock.
+  const stockGated = item.showStock !== false;
+  if (stockGated && item.stock <= 0) card.classList.add('build-item-card-disabled');
+  card.disabled = stockGated && item.stock <= 0;
 
   const visual = document.createElement('div');
   visual.className = `build-item-visual build-item-visual-${item.kind}`;
@@ -182,10 +189,12 @@ function createItemCard(item: BuildItemInfo, onClick: () => void): HTMLElement {
   label.textContent = item.label;
   card.appendChild(label);
 
-  const stock = document.createElement('div');
-  stock.className = 'build-item-stock';
-  stock.textContent = `× ${item.stock}`;
-  card.appendChild(stock);
+  if (stockGated) {
+    const stock = document.createElement('div');
+    stock.className = 'build-item-stock';
+    stock.textContent = `× ${item.stock}`;
+    card.appendChild(stock);
+  }
 
   card.addEventListener('click', (event) => {
     event.stopPropagation();

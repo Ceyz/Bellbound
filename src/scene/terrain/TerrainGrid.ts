@@ -184,28 +184,110 @@ export class TerrainGrid {
     return this.cellHeight(cx, cz);
   }
 
-  // ─── Edit API ──────────────────────────────────────────────────────────
-  // Step 5+ implements the AC rule predicates. Step 1 only ships the data
-  // structure, so the editors are stubs that throw — exercising them at this
-  // stage is a programmer error.
+  // ─── Edit API (Step 5+) ────────────────────────────────────────────────
 
-  raiseCell(_cx: number, _cz: number): EditError | null {
-    throw new Error('TerrainGrid.raiseCell: editor not yet implemented (Step 5)');
+  /**
+   * Set a cell to a new (surface, tier, path) state. Internal helper used by
+   * the public edit methods after they have validated the AC rules. Marks the
+   * single-cell rect dirty so consumers can rebuild the affected region.
+   */
+  private setCell(cx: number, cz: number, cell: TerrainCell): void {
+    this.data[cz * this.width + cx] = packCell(cell);
+    this.dirtyRegions.push({ cxMin: cx, czMin: cz, cxMax: cx, czMax: cz });
   }
-  lowerCell(_cx: number, _cz: number): EditError | null {
-    throw new Error('TerrainGrid.lowerCell: editor not yet implemented (Step 5)');
+
+  /**
+   * Raise a LAND cell by one tier. AC-style rules:
+   *   - target must be LAND (not OCEAN, FRESHWATER, or VOID).
+   *   - target must be in bounds.
+   *   - target's tier must be < T3 (max).
+   *
+   * The plan v4 §3.3 also describes a "no zero-thickness lip" rule (every
+   * edge of the new cliff face must have a 2-cell-thick back). Step 5 ships
+   * with the basic constraints only; the inset-rule lands in a follow-up so
+   * the user can experiment with raises and we can tune the strictness from
+   * actual terraforming behaviour rather than a-priori spec lock.
+   */
+  raiseCell(cx: number, cz: number): EditError | null {
+    if (!this.cellInBounds(cx, cz)) return { reason: 'out_of_bounds' };
+    const cell = this.getCell(cx, cz);
+    if (cell.surface !== Surface.LAND) return { reason: 'not_land' };
+    if (cell.tier >= Tier.T3) return { reason: 'max_tier' };
+    this.setCell(cx, cz, { ...cell, tier: (cell.tier + 1) as Tier });
+    return null;
   }
-  digFreshwater(_cx: number, _cz: number): EditError | null {
-    throw new Error('TerrainGrid.digFreshwater: editor not yet implemented (Step 6)');
+
+  /**
+   * Lower a LAND cell by one tier. AC-style rules:
+   *   - target must be LAND.
+   *   - target must be in bounds.
+   *   - target's tier must be > T0 (min).
+   *   - **no 4-neighbor may have a strictly higher tier** (lowering would
+   *     leave the neighbor cantilevered over the new dip).
+   */
+  lowerCell(cx: number, cz: number): EditError | null {
+    if (!this.cellInBounds(cx, cz)) return { reason: 'out_of_bounds' };
+    const cell = this.getCell(cx, cz);
+    if (cell.surface !== Surface.LAND) return { reason: 'not_land' };
+    if (cell.tier <= Tier.T0) return { reason: 'min_tier' };
+    for (const [dx, dz] of [[1, 0], [-1, 0], [0, 1], [0, -1]] as const) {
+      const nx = cx + dx;
+      const nz = cz + dz;
+      if (!this.cellInBounds(nx, nz)) continue;
+      if (this.getTier(nx, nz) > cell.tier) return { reason: 'cantilever' };
+    }
+    this.setCell(cx, cz, { ...cell, tier: (cell.tier - 1) as Tier });
+    return null;
   }
-  fillFreshwater(_cx: number, _cz: number): EditError | null {
-    throw new Error('TerrainGrid.fillFreshwater: editor not yet implemented (Step 6)');
+
+  /**
+   * Convert a LAND cell to FRESHWATER at its current tier. AC v3-permissive
+   * rules (no adjacency required — the first tile of a new pond is legal):
+   *   - target must be LAND in bounds.
+   *   - target must NOT be at the foot of a higher tier cell (no 4-neighbor
+   *     at strictly higher tier), so digging doesn't create a "trapped under
+   *     the cliff" pond that would render as a triangular gap in the cliff
+   *     side mesh. Players who want a tiered pond can raise the surrounding
+   *     terrain first, then dig at the higher tier.
+   *
+   * Tier is preserved: if the LAND cell was T1 (raised plateau), the
+   * FRESHWATER cell is also T1, with its bed at `tierHeight(T1) - 0.5 m`.
+   */
+  digFreshwater(cx: number, cz: number): EditError | null {
+    if (!this.cellInBounds(cx, cz)) return { reason: 'out_of_bounds' };
+    const cell = this.getCell(cx, cz);
+    if (cell.surface !== Surface.LAND) return { reason: 'not_land' };
+    for (const [dx, dz] of [[1, 0], [-1, 0], [0, 1], [0, -1]] as const) {
+      const nx = cx + dx;
+      const nz = cz + dz;
+      if (!this.cellInBounds(nx, nz)) continue;
+      const nSurface = this.getSurface(nx, nz);
+      if (nSurface === Surface.LAND && this.getTier(nx, nz) > cell.tier) {
+        return { reason: 'cliff_foot' };
+      }
+    }
+    this.setCell(cx, cz, { ...cell, surface: Surface.FRESHWATER });
+    return null;
   }
+
+  /**
+   * Revert a FRESHWATER cell back to LAND at the same tier. AC v3-permissive
+   * rules (no source-preservation check — isolated ponds may be fully filled):
+   *   - target must be FRESHWATER in bounds.
+   */
+  fillFreshwater(cx: number, cz: number): EditError | null {
+    if (!this.cellInBounds(cx, cz)) return { reason: 'out_of_bounds' };
+    const cell = this.getCell(cx, cz);
+    if (cell.surface !== Surface.FRESHWATER) return { reason: 'not_freshwater' };
+    this.setCell(cx, cz, { ...cell, surface: Surface.LAND });
+    return null;
+  }
+
   paintPath(_cx: number, _cz: number, _kind: PathKind): EditError | null {
-    throw new Error('TerrainGrid.paintPath: editor not yet implemented (Step 7)');
+    throw new Error('TerrainGrid.paintPath: not yet implemented (Step 7)');
   }
   erasePath(_cx: number, _cz: number): EditError | null {
-    throw new Error('TerrainGrid.erasePath: editor not yet implemented (Step 7)');
+    throw new Error('TerrainGrid.erasePath: not yet implemented (Step 7)');
   }
 
   // ─── Iteration helpers (consumed by Step 3+ mesh builders) ─────────────

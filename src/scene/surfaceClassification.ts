@@ -1,6 +1,7 @@
 import { ISLAND_TERRAIN_DEPTH, ISLAND_TERRAIN_WIDTH } from '../player/movement';
-import { HEIGHTMAP, getIslandHeight, isInRiver, isOnCliff, riverCenterZ } from './heightmap';
+import { getIslandHeight, isInRiver, isOnCliff } from './heightmap';
 import { sampleIslandShape } from './islandShape';
+import { Surface, getTerrainGrid } from './terrain/TerrainGrid';
 
 export type SurfaceKind = 'grass' | 'sand' | 'dirt' | 'riverbed' | 'cliff' | 'void';
 
@@ -81,7 +82,7 @@ export function classifySurfaceAt(worldX: number, worldZ: number): SurfaceClassi
     : getSurfaceKind({ beachBlend, inRiver, isPath, onCliff });
   const splat = getSplatWeights(kind, beachBlend);
 
-  const cliffEdge = isInIsland ? getCliffEdgeStrength(worldX, worldZ, onCliff) : 0;
+  const cliffEdge = isInIsland ? getCliffEdgeStrength(worldX, worldZ) : 0;
   const riverBank = isInIsland ? getRiverBankStrength(worldX, worldZ) : 0;
   const islandShore = getIslandShoreStrength(shoreDistance, isInIsland);
   const shore = Math.max(riverBank, islandShore);
@@ -155,28 +156,81 @@ function getSplatWeights(kind: SurfaceKind, beachBlend: number): SurfaceSplatWei
   return { grass: 1 - sandWeight, sand: sandWeight, dirt: 0, cliff: 0 };
 }
 
-function getCliffEdgeStrength(
-  worldX: number,
-  worldZ: number,
-  onCliff: boolean,
-) {
-  if (!onCliff) return 0;
+/**
+ * Cliff-edge darkening band along every cell on a raised tier whose 4-neighbor
+ * is at a strictly lower tier. Grid-driven (Step 5+); the previous version
+ * used hardcoded `HEIGHTMAP.CLIFF_X_MAX`/`Z_MAX` analytical bounds, which
+ * would describe the original NW plateau forever even after player edits.
+ *
+ * Strength = 1 right next to the drop, fading to 0 within `CLIFF_EDGE_FADE_M`
+ * inland. Computed in cell-space via the cell containing the texel and a
+ * 4-neighbor lookup.
+ */
+const CLIFF_EDGE_FADE_M = 1.25;
+function getCliffEdgeStrength(worldX: number, worldZ: number) {
+  const grid = getTerrainGrid();
+  const [cx, cz] = grid.worldToCell(worldX, worldZ);
+  if (!grid.cellInBounds(cx, cz)) return 0;
+  if (grid.getSurface(cx, cz) !== Surface.LAND) return 0;
+  const t = grid.getTier(cx, cz);
+  if (t === 0) return 0;
 
-  const distanceToEastEdge = HEIGHTMAP.CLIFF_X_MAX - worldX;
-  const distanceToSouthEdge = HEIGHTMAP.CLIFF_Z_MAX - worldZ;
-  const distanceToExposedEdge = Math.min(distanceToEastEdge, distanceToSouthEdge);
-
-  return 1 - smoothstep(distanceToExposedEdge, 0.15, 1.25);
+  // Distance to the nearest cell-edge of a 4-neighbor at strictly lower tier.
+  // Computed in world coords: 0 right at the cell boundary, 1 m at the cell
+  // center on the far side. We look only at the 4-neighbor directions that
+  // step DOWN; others contribute infinity.
+  const cellCx = grid.originX + (cx + 0.5) * grid.cellSize;
+  const cellCz = grid.originZ + (cz + 0.5) * grid.cellSize;
+  let bestDist = Infinity;
+  for (const [dx, dz] of [[1, 0], [-1, 0], [0, 1], [0, -1]] as const) {
+    const nx = cx + dx;
+    const nz = cz + dz;
+    if (!grid.cellInBounds(nx, nz)) continue;
+    if (grid.getTier(nx, nz) >= t) continue;
+    // Distance from (worldX, worldZ) to the shared cell edge in this direction.
+    const edgeOffset = 0.5 * grid.cellSize;
+    let dist: number;
+    if (dx === 1) dist = (cellCx + edgeOffset) - worldX;
+    else if (dx === -1) dist = worldX - (cellCx - edgeOffset);
+    else if (dz === 1) dist = (cellCz + edgeOffset) - worldZ;
+    else dist = worldZ - (cellCz - edgeOffset);
+    if (dist < bestDist) bestDist = dist;
+  }
+  if (!Number.isFinite(bestDist)) return 0;
+  return 1 - smoothstep(Math.max(0, bestDist), 0.15, CLIFF_EDGE_FADE_M);
 }
 
+/**
+ * Wet/dirt strip along every LAND cell whose 4-neighbor is FRESHWATER. Grid-
+ * driven so player-dug ponds get the same wet-sand band as the original river,
+ * and player-filled river tiles stop receiving the band. Strength fades from
+ * 1 at the bank to 0 within `RIVER_BANK_FADE_M`.
+ */
+const RIVER_BANK_FADE_M = 1.25;
 function getRiverBankStrength(worldX: number, worldZ: number) {
-  if (worldX < HEIGHTMAP.RIVER_X_MIN - 0.8 || worldX > HEIGHTMAP.RIVER_X_MAX + 0.8) return 0;
-  if (worldZ < HEIGHTMAP.RIVER_Z_MIN - 0.8 || worldZ > HEIGHTMAP.RIVER_Z_MAX + 0.8) return 0;
+  const grid = getTerrainGrid();
+  const [cx, cz] = grid.worldToCell(worldX, worldZ);
+  if (!grid.cellInBounds(cx, cz)) return 0;
+  if (grid.getSurface(cx, cz) !== Surface.LAND) return 0;
 
-  const distanceFromCenter = Math.abs(worldZ - riverCenterZ(worldX));
-  const distanceToBank = Math.abs(distanceFromCenter - HEIGHTMAP.RIVER_HALF_WIDTH);
-
-  return 1 - smoothstep(distanceToBank, 0.05, 1.25);
+  const cellCx = grid.originX + (cx + 0.5) * grid.cellSize;
+  const cellCz = grid.originZ + (cz + 0.5) * grid.cellSize;
+  let bestDist = Infinity;
+  for (const [dx, dz] of [[1, 0], [-1, 0], [0, 1], [0, -1]] as const) {
+    const nx = cx + dx;
+    const nz = cz + dz;
+    if (!grid.cellInBounds(nx, nz)) continue;
+    if (grid.getSurface(nx, nz) !== Surface.FRESHWATER) continue;
+    const edgeOffset = 0.5 * grid.cellSize;
+    let dist: number;
+    if (dx === 1) dist = (cellCx + edgeOffset) - worldX;
+    else if (dx === -1) dist = worldX - (cellCx - edgeOffset);
+    else if (dz === 1) dist = (cellCz + edgeOffset) - worldZ;
+    else dist = worldZ - (cellCz - edgeOffset);
+    if (dist < bestDist) bestDist = dist;
+  }
+  if (!Number.isFinite(bestDist)) return 0;
+  return 1 - smoothstep(Math.max(0, bestDist), 0.05, RIVER_BANK_FADE_M);
 }
 
 function getIslandShoreStrength(shoreDistance: number, isInIsland: boolean) {
