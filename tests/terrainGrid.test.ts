@@ -11,6 +11,7 @@ import {
   Tier,
   tierHeight,
 } from '../src/scene/terrain/TerrainGrid';
+import type { BuiltStructure } from '../src/scene/terrain/builtStructure';
 
 describe('TerrainGrid — geometry constants', () => {
   it('exposes the spec-locked grid dimensions', () => {
@@ -185,6 +186,158 @@ describe('TerrainGrid — bakeFromAnalytical sanity counts', () => {
     const cell = grid.getCell(cx, cz);
     expect(cell.surface).toBe(Surface.LAND);
     expect(cell.tier).toBe(Tier.T0);
+  });
+});
+
+describe('TerrainGrid — isTraversable', () => {
+  const grid = TerrainGrid.bakeFromAnalytical();
+
+  // Convenience: convert world coords to a cell tuple.
+  const cell = (wx: number, wz: number): [number, number] => grid.worldToCell(wx, wz);
+
+  it('same-cell move is always traversable', () => {
+    const [cx, cz] = cell(0, 10);
+    expect(grid.isTraversable(cx, cz, cx, cz)).toBe(true);
+  });
+
+  it('same-tier LAND ↔ LAND is traversable', () => {
+    // (0, 10) and (1, 10) are both deep-inland LAND tier 0.
+    const [fromCx, fromCz] = cell(0, 10);
+    const [toCx, toCz] = cell(1, 10);
+    expect(grid.isTraversable(fromCx, fromCz, toCx, toCz)).toBe(true);
+  });
+
+  it('LAND tier 0 → tier 1 (cliff edge) is BLOCKED without a staircase', () => {
+    // Cliff X bounds: world [-27, -10] map to cells [20, 36]. cell (36, 24) is
+    // T1 (just inside cliff bound), cell (37, 24) is T0 (just outside) — adjacent.
+    const fromCx = 36;
+    const fromCz = 24;
+    const toCx = 37;
+    const toCz = 24;
+    expect(grid.getTier(fromCx, fromCz)).toBe(Tier.T1);
+    expect(grid.getTier(toCx, toCz)).toBe(Tier.T0);
+    expect(grid.isTraversable(fromCx, fromCz, toCx, toCz)).toBe(false);
+  });
+
+  it('LAND tier 0 → tier 1 with a staircase spanning both cells is traversable', () => {
+    const fromCx = 36, fromCz = 24;
+    const toCx = 37, toCz = 24;
+    const staircase: BuiltStructure = {
+      kind: 'staircase',
+      cells: [[fromCx, fromCz], [toCx, toCz]],
+    };
+    expect(grid.isTraversable(fromCx, fromCz, toCx, toCz, [staircase])).toBe(true);
+  });
+
+  it('LAND → FRESHWATER (river) is BLOCKED without a bridge', () => {
+    // River runs at z=5±1.8 along x=0. cell (47, 46) is world (0.5, 7.5) LAND,
+    // cell (47, 45) is world (0.5, 6.5) FRESHWATER (z=6.5 within river halfwidth).
+    const fromCx = 47, fromCz = 46;
+    const toCx = 47, toCz = 45;
+    expect(grid.getSurface(fromCx, fromCz)).toBe(Surface.LAND);
+    expect(grid.getSurface(toCx, toCz)).toBe(Surface.FRESHWATER);
+    expect(grid.isTraversable(fromCx, fromCz, toCx, toCz)).toBe(false);
+  });
+
+  it('LAND → FRESHWATER with a bridge structure spanning both cells is traversable', () => {
+    const fromCx = 47, fromCz = 46;
+    const toCx = 47, toCz = 45;
+    const bridge: BuiltStructure = {
+      kind: 'bridge',
+      cells: [[fromCx, fromCz], [toCx, toCz]],
+    };
+    expect(grid.isTraversable(fromCx, fromCz, toCx, toCz, [bridge])).toBe(true);
+  });
+
+  it('FRESHWATER → LAND is traversable (player escaping water)', () => {
+    const fromCx = 47, fromCz = 45;
+    const toCx = 47, toCz = 46;
+    expect(grid.getSurface(fromCx, fromCz)).toBe(Surface.FRESHWATER);
+    expect(grid.getSurface(toCx, toCz)).toBe(Surface.LAND);
+    expect(grid.isTraversable(fromCx, fromCz, toCx, toCz)).toBe(true);
+  });
+
+  it('non-adjacent cells are BLOCKED (multi-cell hop rejected)', () => {
+    // Same surface kind, both LAND tier 0, but two cells apart along x → blocked.
+    expect(grid.isTraversable(47, 49, 49, 49)).toBe(false);
+    // And along z.
+    expect(grid.isTraversable(47, 49, 47, 51)).toBe(false);
+  });
+
+  it('diagonal adjacency (|Δx|=|Δz|=1) is allowed when both cells are same-tier LAND', () => {
+    // Diagonal between two adjacent same-tier LAND cells is traversable. The
+    // body probes use diagonal sample points, so this case must work.
+    expect(grid.isTraversable(47, 49, 48, 50)).toBe(true);
+  });
+
+  it('LAND → OCEAN (adjacent shore step) is BLOCKED (no swimming in MVP)', () => {
+    // Find an adjacent LAND/OCEAN pair somewhere along the perturbed shoreline.
+    let landCx = -1, landCz = -1, oceanCx = -1, oceanCz = -1;
+    outer:
+    for (let cz = 0; cz < GRID_D; cz += 1) {
+      for (let cx = 0; cx < GRID_W; cx += 1) {
+        if (grid.getSurface(cx, cz) !== Surface.LAND) continue;
+        for (const [dx, dz] of [[1, 0], [-1, 0], [0, 1], [0, -1]] as const) {
+          const nx = cx + dx, nz = cz + dz;
+          if (!grid.cellInBounds(nx, nz)) continue;
+          if (grid.getSurface(nx, nz) === Surface.OCEAN) {
+            landCx = cx; landCz = cz; oceanCx = nx; oceanCz = nz;
+            break outer;
+          }
+        }
+      }
+    }
+    expect(landCx).toBeGreaterThanOrEqual(0);
+    expect(grid.isTraversable(landCx, landCz, oceanCx, oceanCz)).toBe(false);
+  });
+
+  it('out-of-bounds destination is BLOCKED', () => {
+    const [fromCx, fromCz] = cell(0, 10);
+    expect(grid.isTraversable(fromCx, fromCz, GRID_W, fromCz)).toBe(false);
+    expect(grid.isTraversable(fromCx, fromCz, fromCx, GRID_D)).toBe(false);
+    expect(grid.isTraversable(fromCx, fromCz, -1, fromCz)).toBe(false);
+  });
+
+  it('out-of-bounds source is BLOCKED', () => {
+    const [toCx, toCz] = cell(0, 10);
+    expect(grid.isTraversable(-1, toCz, toCx, toCz)).toBe(false);
+  });
+
+  it('a staircase structure does NOT also count as a bridge across water', () => {
+    // Adjacent LAND/FRESHWATER pair (47, 46)/(47, 45) per earlier tests.
+    const fromCx = 47, fromCz = 46;
+    const toCx = 47, toCz = 45;
+    const fakeStaircase: BuiltStructure = {
+      kind: 'staircase',
+      cells: [[fromCx, fromCz], [toCx, toCz]],
+    };
+    expect(grid.isTraversable(fromCx, fromCz, toCx, toCz, [fakeStaircase])).toBe(false);
+  });
+});
+
+describe('TerrainGrid — forEachLandOceanEdge', () => {
+  const grid = TerrainGrid.bakeFromAnalytical();
+
+  it('yields a non-trivial number of shore edges for the baked island', () => {
+    let edgeCount = 0;
+    grid.forEachLandOceanEdge(() => {
+      edgeCount += 1;
+    });
+    // The baked island has a few hundred shore edges. Loose bounds so small
+    // bake tweaks (perturbation, BEACH_TRANSITION) don't break the test.
+    expect(edgeCount).toBeGreaterThan(50);
+    expect(edgeCount).toBeLessThan(800);
+  });
+
+  it('every yielded pair has LAND/FRESHWATER on the inland side and OCEAN on the ocean side', () => {
+    let mismatches = 0;
+    grid.forEachLandOceanEdge((inlandCx, inlandCz, oceanCx, oceanCz) => {
+      const inland = grid.getSurface(inlandCx, inlandCz);
+      const ocean = grid.getSurface(oceanCx, oceanCz);
+      if (inland === Surface.OCEAN || inland === Surface.VOID) mismatches += 1;
+      if (ocean !== Surface.OCEAN) mismatches += 1;
+    });
+    expect(mismatches).toBe(0);
   });
 });
 

@@ -5,9 +5,10 @@ import { updatePlayerSurfaceDecals } from './scene/playerSurfaceDecals';
 import { rollingConfig, invalidateRollingCache } from './scene/rollingWorld';
 import {
   getPlayerStandingHeight,
-  isInRiver,
   pushPlayerOutOfRiver,
 } from './scene/heightmap';
+import { getTerrainGrid } from './scene/terrain/TerrainGrid';
+import type { BuiltStructure } from './scene/terrain/builtStructure';
 import { BuildMode } from './buildMode/buildMode';
 import { mountBuildModeUI } from './buildMode/buildModeUI';
 import {
@@ -281,14 +282,24 @@ renderer.setAnimationLoop(() => {
   const desiredZ = prevZ + velocity.z * delta;
   preResolvePosition.set(desiredX, prevHeight, desiredZ);
 
-  // Probe the body extents (8 points: cardinal + diagonal) so the body never pokes
-  // past the river bank before being stopped. Diagonal probes are at 0.707 × radius.
-  // Height-step is checked at the destination CENTER only — checking it on the side
-  // probes too caused corner-pinch freezes (cliff edges where two perpendicular probes
-  // each straddle a > 0.5 m drop, blocking both axes at once).
+  // Step 4 movement resolver. The previous trio
+  //   isInRiver(qx, qz) || height-delta > 0.5
+  // is replaced by `terrainGrid.isTraversable(fromCell, toCell, structures)`.
+  // The grid knows about all surface kinds (LAND tier 0-3, FRESHWATER, OCEAN,
+  // VOID), so cliff-edge blocking generalizes from "cliff = ±1 m" to any tier
+  // discontinuity automatically. Same body-probe pattern (cardinal +
+  // diagonals at PLAYER_COLLISION_RADIUS) so the player never pokes past a
+  // boundary before being stopped.
+  //
+  // `structures` is currently empty (Step 9 brings player-placed bridges and
+  // staircases). With no structures, the resolver locks the player to their
+  // starting tier and bans water entry — which matches the post-Step-0 scene
+  // (no built bridges, no staircases).
+  const builtStructures: readonly BuiltStructure[] = [];
+  const terrainGrid = getTerrainGrid();
   const r = PLAYER_COLLISION_RADIUS;
   const d = r * 0.7071;
-  const riverProbes: Array<[number, number]> = [
+  const bodyProbes: Array<[number, number]> = [
     [0, 0],
     [r, 0],
     [-r, 0],
@@ -299,13 +310,14 @@ renderer.setAnimationLoop(() => {
     [-d, d],
     [-d, -d],
   ];
+  const [prevCx, prevCz] = terrainGrid.worldToCell(prevX, prevZ);
   const isBlockedAt = (x: number, z: number): boolean => {
-    for (const [dx, dz] of riverProbes) {
-      const qx = x + dx;
-      const qz = z + dz;
-      if (isInRiver(qx, qz)) return true;
+    for (const [dx, dz] of bodyProbes) {
+      const [probeCx, probeCz] = terrainGrid.worldToCell(x + dx, z + dz);
+      if (!terrainGrid.isTraversable(prevCx, prevCz, probeCx, probeCz, builtStructures)) {
+        return true;
+      }
     }
-    if (Math.abs(getPlayerStandingHeight(x, z) - prevHeight) > 0.5) return true;
     return false;
   };
 
@@ -331,8 +343,14 @@ renderer.setAnimationLoop(() => {
 
   const currentSpeed = velocity.length();
 
-  if (currentSpeed > 0.08) {
-    const targetRotation = Math.atan2(velocity.x, velocity.z);
+  // Rotation uses input INTENT, not the post-resolver velocity. With the grid
+  // movement resolver, walking against a cliff or river zeros the velocity
+  // along blocked axes; using velocity here would freeze the player's facing
+  // while pinned. Intent stays at the pressed direction so the player keeps
+  // turning even when boxed in by a wall.
+  const intentMagnitude = Math.hypot(movementIntent.x, movementIntent.z);
+  if (intentMagnitude > 0.08) {
+    const targetRotation = Math.atan2(movementIntent.x, movementIntent.z);
     island.player.rotation.y = dampAngle(
       island.player.rotation.y,
       targetRotation,

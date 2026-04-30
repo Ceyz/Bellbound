@@ -160,6 +160,20 @@ float waveSum = waterWaveSum(wxz, uTime);
 
 // 1. Open-water waves — amplitude tapered to 0 at SDF=0 so wave peaks never
 // punch through the sand at the shoreline.
+//
+// TODO (Step 6 in TERRAFORMING_REFACTO_PLAN.md): the wave taper and the
+// shore wash below still consult the analytical island SDF. The visible
+// coastline is now grid-driven, so the two contours can drift apart by up to
+// ~1 m near the shore — wave amplitude tapers around the OLD curve while the
+// sand actually ends at a quantized 1m cell boundary. Mitigations:
+//   (a) move the per-tier water surface to its own mesh (already done for
+//       freshwater); the ocean plane's vertex shader still needs grid input.
+//   (b) sample the baked shoreDistanceMap via vertexTextureFetch so the taper
+//       follows the grid contour. This requires the texture to stay grid-baked
+//       when player edits ship in Step 5+.
+// Acceptable for Step 4 because the magnitude is small (~10 cm wave amp,
+// less than 1 m shore mismatch) and the foam ribbon (shoreWashSystem) that
+// would have made the mismatch visible is currently disabled.
 float distFromShoreVtx = max(islandSDF(wxz), 0.0);
 float shoreAmp = smoothstep(0.5, 14.0, distFromShoreVtx);
 float baseAmp = 0.045 + 0.18 * uWaveStrength;

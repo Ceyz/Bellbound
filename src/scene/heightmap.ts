@@ -1,5 +1,4 @@
 import type * as THREE from 'three';
-import { sampleIslandShape } from './islandShape';
 import {
   FRESHWATER_BED_OFFSET_METERS,
   Surface,
@@ -10,24 +9,24 @@ import {
 
 /**
  * Façade over the editable `TerrainGrid` (Step 2 of the terraforming refactor,
- * generalized in Step 3 round 2 fix to support any tier in [T0..T3]).
+ * generalized in Step 3 round 2 to support any tier in [T0..T3], with the
+ * analytical beach dip removed in Step 4 to keep player physics aligned with
+ * the new flat-tier ground mesh).
  *
  *  - `getIslandHeight` reads the cell at (worldX, worldZ) from the grid:
- *      • LAND tier T → `tierHeight(T)`. T0 LAND additionally gets the analytical
- *        beach slope so the visible 18 cm dip near the analytical shoreline
- *        survives until the per-cell shore lip mesh ships in Step 3 round 3.
+ *      • LAND tier T → `tierHeight(T)` (flat per cell, matches ground mesh).
  *      • FRESHWATER tier T → `tierHeight(T) - FRESHWATER_BED_OFFSET_METERS`.
  *        Player physics standing in water sits at the bed.
- *      • OCEAN / VOID → analytical beach slope (the offshore "shelf" altitude).
+ *      • OCEAN / VOID → 0 (sea level — there's no terrain mesh here).
  *  - `isOnCliff` is true for any LAND cell at tier > T0, not just the original
  *    hardcoded NW T1 plateau. T2/T3 added by player edits will report correctly.
  *  - `isInRiver` is FRESHWATER cell lookup.
  *  - `pushPlayerOutOfRiver` keeps the analytical riverCenterZ as a Step-2 stop-
- *    gap; the proper grid-aware movement resolver lands in Step 4 of the plan.
+ *    gap; superseded by the Step 4 movement resolver which now blocks river
+ *    entry at the cell boundary directly.
  */
 
 const RIVER_HALF_WIDTH = 1.8;
-const BEACH_DIP = 0.18;
 
 // Legacy constants kept for compatibility with consumers that still reference
 // the analytical bounds (cliff + river bake helpers). These are NOT used for
@@ -47,31 +46,22 @@ export function getIslandHeight(worldX: number, worldZ: number): number {
   const grid = getTerrainGrid();
   const [cx, cz] = grid.worldToCell(worldX, worldZ);
 
-  if (!grid.cellInBounds(cx, cz)) {
-    return -BEACH_DIP * computeBeachSlope(worldX, worldZ);
-  }
+  if (!grid.cellInBounds(cx, cz)) return 0;
 
   const cell = grid.getCell(cx, cz);
 
-  if (cell.surface === Surface.OCEAN || cell.surface === Surface.VOID) {
-    return -BEACH_DIP * computeBeachSlope(worldX, worldZ);
-  }
+  if (cell.surface === Surface.OCEAN || cell.surface === Surface.VOID) return 0;
 
   if (cell.surface === Surface.FRESHWATER) {
     return tierHeight(cell.tier) - FRESHWATER_BED_OFFSET_METERS;
   }
 
-  // LAND. Beach dip applies on T0 only; raised tiers (T1+) read as flat plateaus.
-  if (cell.tier === Tier.T0) {
-    return tierHeight(Tier.T0) - BEACH_DIP * computeBeachSlope(worldX, worldZ);
-  }
+  // LAND — flat at the cell's tier. The visible grass↔sand step (D16 shore
+  // lip) lands as a separate mini cliff-side mesh in Step 3 round 3; the
+  // analytical 18 cm beach dip that previously lived here was removed in
+  // Step 4 because it caused the player's feet to sink below the (flat) ground
+  // mesh by exactly that amount.
   return tierHeight(cell.tier);
-}
-
-function computeBeachSlope(worldX: number, worldZ: number): number {
-  const beachT = sampleIslandShape(worldX, worldZ).beachT;
-  const t = Math.max(0, Math.min(1, (beachT - 0.42) / 0.18));
-  return t * t * (3 - 2 * t);
 }
 
 export function getPlayerStandingHeight(worldX: number, worldZ: number): number {
@@ -125,3 +115,7 @@ export const HEIGHTMAP = {
   RIVER_Z_MIN,
   RIVER_Z_MAX,
 };
+
+// Re-export `Tier` so consumers that imported `Tier` indirectly through
+// heightmap can continue to do so after the cleanup.
+export { Tier };

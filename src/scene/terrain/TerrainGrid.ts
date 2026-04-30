@@ -1,4 +1,5 @@
 import { sampleIslandSDF } from '../islandShape';
+import { type BuiltStructure, structureConnects } from './builtStructure';
 
 /**
  * Editable AC:NH-style terrain grid backed by 1 byte per cell. The grid is the
@@ -249,6 +250,52 @@ export class TerrainGrid {
   }
 
   /**
+   * Iterates every interior grid edge where one side is LAND/FRESHWATER and
+   * the other is OCEAN. Yielded values include both the inland cell and the
+   * ocean cell so callers can derive midpoints and outward normals.
+   *
+   * Step 5+ uses this to anchor shore wave / beach wash systems on grid edges
+   * (the analytical `sampleShoreAnchors()` was the pre-refactor equivalent;
+   * keeping it on a continuous SDF after the visible coastline switched to a
+   * 1m grid makes the foam ribbon drift away from the visible shoreline).
+   *
+   * Edge orientation: dx, dz point FROM inland cell TOWARD the ocean cell
+   * (so dx=1, dz=0 means the ocean cell is east of the inland cell).
+   */
+  forEachLandOceanEdge(cb: (
+    inlandCx: number,
+    inlandCz: number,
+    oceanCx: number,
+    oceanCz: number,
+    dx: number,
+    dz: number,
+  ) => void): void {
+    for (let cz = 0; cz < this.depth; cz += 1) {
+      for (let cx = 0; cx < this.width; cx += 1) {
+        const surface = this.getSurface(cx, cz);
+        if (surface === Surface.OCEAN || surface === Surface.VOID) continue;
+
+        // East
+        if (cx + 1 < this.width && this.getSurface(cx + 1, cz) === Surface.OCEAN) {
+          cb(cx, cz, cx + 1, cz, 1, 0);
+        }
+        // West
+        if (cx - 1 >= 0 && this.getSurface(cx - 1, cz) === Surface.OCEAN) {
+          cb(cx, cz, cx - 1, cz, -1, 0);
+        }
+        // North
+        if (cz + 1 < this.depth && this.getSurface(cx, cz + 1) === Surface.OCEAN) {
+          cb(cx, cz, cx, cz + 1, 0, 1);
+        }
+        // South
+        if (cz - 1 >= 0 && this.getSurface(cx, cz - 1) === Surface.OCEAN) {
+          cb(cx, cz, cx, cz - 1, 0, -1);
+        }
+      }
+    }
+  }
+
+  /**
    * Iterates every grid edge where the two cells have different `cellHeight()`,
    * yielding a vertical face. Used by the cliff side mesh builder.
    *
@@ -287,6 +334,78 @@ export class TerrainGrid {
         }
       }
     }
+  }
+
+  // ─── Movement traversal predicate (Step 4) ─────────────────────────────
+
+  /**
+   * Decides whether a player can move from `fromCell` to `toCell` in one step.
+   *
+   *   - same cell                                  → OK
+   *   - non-adjacent cells (|Δx| > 1 or |Δz| > 1)  → blocked (per-step contract)
+   *   - either side out of bounds                  → blocked
+   *   - target is VOID or OCEAN                    → blocked
+   *   - target is FRESHWATER                       → blocked unless a bridge
+   *                                                  structure connects both cells
+   *   - source is FRESHWATER (player escaping water) → OK
+   *   - same-tier LAND → LAND                      → OK
+   *   - different-tier LAND → LAND                 → blocked unless a staircase
+   *                                                  or incline structure
+   *                                                  connects both cells
+   *
+   * **Contract**: callers must pass 8-adjacent cells (4-cardinal + 4-diagonal)
+   * or the same cell. Hops > 1 in either axis are rejected so the resolver
+   * can't be tricked into approving a path that skips across an intervening
+   * blocked cell. The 8-adjacency relaxation (vs strict 4-cardinal) is needed
+   * so the player's body probes — which sample cardinal AND diagonal points at
+   * `PLAYER_COLLISION_RADIUS` — can ask about diagonal cells when the player
+   * is near a cell corner. Pathfinding callers should still walk one cell at
+   * a time and treat each diagonal as two cardinal steps if they need to
+   * verify the L-corner is not blocked.
+   *
+   * Step 4 ships with `structures` always empty (the player can't yet place
+   * bridges or staircases — those land in Step 9), so this resolver effectively
+   * locks the player to their starting tier and bans water entry. That matches
+   * the post-Step-0 scene cleanup: the original bridge + staircase meshes were
+   * removed, so cliff and river are intentionally inaccessible until Step 9
+   * brings the placement tools online.
+   */
+  isTraversable(
+    fromCx: number,
+    fromCz: number,
+    toCx: number,
+    toCz: number,
+    structures: readonly BuiltStructure[] = [],
+  ): boolean {
+    if (fromCx === toCx && fromCz === toCz) return true;
+
+    // Adjacency guard — see the contract note above. 8-adjacency: |Δx| ≤ 1
+    // AND |Δz| ≤ 1. Multi-cell hops are rejected so a single call can't approve
+    // a path that skips across a blocked cell.
+    const dx = Math.abs(toCx - fromCx);
+    const dz = Math.abs(toCz - fromCz);
+    if (dx > 1 || dz > 1) return false;
+
+    if (!this.cellInBounds(fromCx, fromCz)) return false;
+    if (!this.cellInBounds(toCx, toCz)) return false;
+
+    const toSurface = this.getSurface(toCx, toCz);
+    if (toSurface === Surface.VOID || toSurface === Surface.OCEAN) return false;
+
+    const fromSurface = this.getSurface(fromCx, fromCz);
+
+    if (toSurface === Surface.FRESHWATER) {
+      return structureConnects(structures, fromCx, fromCz, toCx, toCz, ['bridge']);
+    }
+
+    // Target is LAND from here on.
+    if (fromSurface === Surface.FRESHWATER) return true;
+
+    const fromTier = this.getTier(fromCx, fromCz);
+    const toTier = this.getTier(toCx, toCz);
+    if (fromTier === toTier) return true;
+
+    return structureConnects(structures, fromCx, fromCz, toCx, toCz, ['staircase', 'incline']);
   }
 
   // ─── Dirty rect tracking (used by Step 3+ for partial mesh/texture rebuild) ─

@@ -143,14 +143,18 @@ export function createIslandScene(): IslandScene {
   const riverBankLips = createRiverBankLip(surfaceTextures);
   scene.add(riverBankLips);
 
+  // Both shore-wave systems hidden during the Step 0→4 refactor. They
+  // anchor on `sampleShoreAnchors()` (analytical SDF), so re-enabling either
+  // would put the foam ribbon on the OLD curve while the visible coastline
+  // is now grid-driven. The result was patches of fake foam appearing inland.
+  // Step 6 of TERRAFORMING_REFACTO_PLAN.md re-anchors them on
+  // `terrainGrid.forEachLandOceanEdge()` (helper added in Step 4) and re-
+  // enables them. Until then the ocean reads as flatter at the coast (a known
+  // visual regression that the user has accepted).
   const beachWaves = createBeachWaveSystem();
   beachWaves.mesh.visible = false;
   scene.add(beachWaves.mesh);
 
-  // Step 3 round 2: disabled until the wash anchors are derived from grid edges
-  // (currently they sample the analytical SDF which leaks "fake foam" patches
-  // onto the new flat-tier ground mesh). Will be reworked in a later step to
-  // anchor on the grid LAND↔OCEAN boundary cells.
   const shoreWash = createShoreWashSystem();
   shoreWash.mesh.visible = false;
   scene.add(shoreWash.mesh);
