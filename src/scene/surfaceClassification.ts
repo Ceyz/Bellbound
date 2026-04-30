@@ -1,5 +1,5 @@
 import { ISLAND_TERRAIN_DEPTH, ISLAND_TERRAIN_WIDTH } from '../player/movement';
-import { HEIGHTMAP, getIslandHeight, isInRiver, isOnCliff, isOnStaircase, riverCenterZ } from './heightmap';
+import { HEIGHTMAP, getIslandHeight, isInRiver, isOnCliff, riverCenterZ } from './heightmap';
 import { sampleIslandShape } from './islandShape';
 
 export type SurfaceKind = 'grass' | 'sand' | 'dirt' | 'riverbed' | 'cliff' | 'void';
@@ -31,7 +31,6 @@ export interface SurfaceClassification {
   isPath: boolean;
   kind: SurfaceKind;
   onCliff: boolean;
-  onStaircase: boolean;
   shore: number;
   splat: SurfaceSplatWeights;
   riverBank: number;
@@ -68,8 +67,10 @@ export function classifySurfaceAt(worldX: number, worldZ: number): SurfaceClassi
 
   const inRiver = isInIsland && isInRiver(worldX, worldZ);
   const onCliff = isInIsland && !inRiver && isOnCliff(worldX, worldZ);
-  const onStaircase = isInIsland && isOnStaircase(worldX, worldZ);
-  const isPath = isInIsland && isPathAt(worldX, worldZ);
+  // Hardcoded paths to the (now-removed) house and shop were dropped during the
+  // terraforming refactor scene cleanup; players will paint paths via the path
+  // tool once Step 7 ships.
+  const isPath = false;
   const isBeach = isInIsland && !inRiver && beachBlend >= 0.5;
   // Match `getSurfaceKind`'s sand threshold so anywhere the surface kind reads
   // "sand" the gameplay also considers it sand for footprint spawning.
@@ -80,7 +81,7 @@ export function classifySurfaceAt(worldX: number, worldZ: number): SurfaceClassi
     : getSurfaceKind({ beachBlend, inRiver, isPath, onCliff });
   const splat = getSplatWeights(kind, beachBlend);
 
-  const cliffEdge = isInIsland ? getCliffEdgeStrength(worldX, worldZ, onCliff, onStaircase) : 0;
+  const cliffEdge = isInIsland ? getCliffEdgeStrength(worldX, worldZ, onCliff) : 0;
   const riverBank = isInIsland ? getRiverBankStrength(worldX, worldZ) : 0;
   const islandShore = getIslandShoreStrength(shoreDistance, isInIsland);
   const shore = Math.max(riverBank, islandShore);
@@ -98,7 +99,6 @@ export function classifySurfaceAt(worldX: number, worldZ: number): SurfaceClassi
     isPath,
     kind,
     onCliff,
-    onStaircase,
     shore,
     splat,
     riverBank,
@@ -117,14 +117,6 @@ export function surfaceWeightAt(
   channel: SurfaceSplatChannel,
 ): number {
   return classifySurfaceAt(worldX, worldZ).splat[channel];
-}
-
-export function isPathAt(worldX: number, worldZ: number): boolean {
-  const pathToHouse = Math.abs(worldX + 10.4) < 0.8 && worldZ > -2.8 && worldZ < 16.5;
-  const pathToShop = Math.abs(worldZ - 8.4) < 0.75 && worldX > -10.4 && worldX < 23.4;
-  const crossPath = Math.abs(worldZ + 6.8) < 0.68 && worldX > -25.4 && worldX < 26.2;
-
-  return pathToHouse || pathToShop || crossPath;
 }
 
 function getSurfaceKind(surface: {
@@ -167,16 +159,14 @@ function getCliffEdgeStrength(
   worldX: number,
   worldZ: number,
   onCliff: boolean,
-  onStaircase: boolean,
 ) {
   if (!onCliff) return 0;
 
   const distanceToEastEdge = HEIGHTMAP.CLIFF_X_MAX - worldX;
   const distanceToSouthEdge = HEIGHTMAP.CLIFF_Z_MAX - worldZ;
   const distanceToExposedEdge = Math.min(distanceToEastEdge, distanceToSouthEdge);
-  const strength = 1 - smoothstep(distanceToExposedEdge, 0.15, 1.25);
 
-  return onStaircase ? strength * 0.25 : strength;
+  return 1 - smoothstep(distanceToExposedEdge, 0.15, 1.25);
 }
 
 function getRiverBankStrength(worldX: number, worldZ: number) {

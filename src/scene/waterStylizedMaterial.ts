@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 import { ISLAND_TERRAIN_DEPTH, ISLAND_TERRAIN_WIDTH } from '../player/movement';
 import { ISLAND_SHAPE } from './islandShape';
-import type { SurfaceMaps } from './surfaceMaps';
+import { MAX_SHORE_DISTANCE_METERS, type SurfaceMaps } from './surfaceMaps';
 
 export interface WaterStylizedOptions {
   surfaceMaps: SurfaceMaps;
@@ -9,6 +9,8 @@ export interface WaterStylizedOptions {
 
 interface WaterUniforms {
   uRiverMask: THREE.IUniform<THREE.DataTexture>;
+  uShoreDistanceMap: THREE.IUniform<THREE.DataTexture>;
+  uMaxShoreDistance: THREE.IUniform<number>;
   uTerrainExtents: THREE.IUniform<THREE.Vector2>;
   uTime: THREE.IUniform<number>;
   uWaveStrength: THREE.IUniform<number>;
@@ -17,6 +19,8 @@ interface WaterUniforms {
 export function createWaterStylizedMaterial(options: WaterStylizedOptions): THREE.MeshStandardMaterial {
   const waterUniforms: WaterUniforms = {
     uRiverMask: { value: options.surfaceMaps.riverMask },
+    uShoreDistanceMap: { value: options.surfaceMaps.shoreDistanceMap },
+    uMaxShoreDistance: { value: MAX_SHORE_DISTANCE_METERS },
     uTerrainExtents: {
       value: new THREE.Vector2(ISLAND_TERRAIN_WIDTH, ISLAND_TERRAIN_DEPTH),
     },
@@ -79,7 +83,7 @@ export function createWaterStylizedMaterial(options: WaterStylizedOptions): THRE
       );
   };
 
-  material.customProgramCacheKey = () => 'water-stylized:v51';
+  material.customProgramCacheKey = () => 'water-stylized:v54';
   material.needsUpdate = true;
 
   return material;
@@ -203,6 +207,8 @@ varying vec2 vWaterWorldXZ;
 varying float vWaveCrest;
 varying float vWashAmp;
 uniform sampler2D uRiverMask;
+uniform sampler2D uShoreDistanceMap;
+uniform float uMaxShoreDistance;
 uniform vec2 uTerrainExtents;
 uniform float uTime;
 uniform float uWaveStrength;
@@ -270,11 +276,20 @@ const FRAGMENT_WATER_BODY = `
 vec2 terrainUv = (vWaterWorldXZ + uTerrainExtents * 0.5) / uTerrainExtents;
 float insideTerrain = waterInsideTerrain(terrainUv);
 
-// Analytical signed distance to the island shore, in meters. Positive offshore.
+// Reverted to inline analytical SDF after Step 3 round 2 texture sample exposed
+// a visible regression on the inland LAND area (foamy white pattern instead of
+// proper grass / sand). Will swap once the bake precision is bumped (Step 3
+// round 3 — signed-distance JFA + R16 storage).
 float distFromShoreM = max(islandSDF(vWaterWorldXZ), 0.0);
 
+// Step 3 round 2: this plane is now the OCEAN ONLY. Freshwater (river / pond)
+// fragments are owned by freshwaterStylizedMaterial on a separate per-tier
+// mesh. Discard freshwater fragments here so the freshwater mesh underneath
+// (or above, depending on tier) renders cleanly without the ocean foam,
+// whitecaps, or shore wash leaking into the river palette.
 float riverWater = texture2D(uRiverMask, clamp(terrainUv, vec2(0.0), vec2(1.0))).r * insideTerrain;
-float oceanFlag = 1.0 - riverWater;
+if (riverWater > 0.5) discard;
+float oceanFlag = 1.0;
 
 vec2 flowA = vec2(0.055, -0.025) * uTime;
 vec2 flowB = vec2(-0.028, 0.044) * uTime;

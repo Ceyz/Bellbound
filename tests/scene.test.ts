@@ -34,16 +34,20 @@ describe('createIslandScene', () => {
     expect(island.scene.getObjectByName('shore-wash-ring')).toBeDefined();
     expect(island.shoreWash.material.name).toBe('shore-wash-material');
     expect(island.shoreWash.material.customProgramCacheKey()).toBe('shore-wash:v27');
-    expect(island.shoreWash.mesh.visible).toBe(true);
+    // Disabled in Step 3 round 2 — the SDF-anchored ribbon currently bleeds
+    // onto the flat-tier ground mesh. Will be re-enabled with grid anchors.
+    expect(island.shoreWash.mesh.visible).toBe(false);
     expect(island.beachWaves.mesh.visible).toBe(false);
     expect(island.scene.getObjectByName('main-sun')).toBeDefined();
-    expect(island.scene.getObjectByName('placeholder-house')).toBeDefined();
-    expect(island.scene.getObjectByName('placeholder-shop-counter')).toBeDefined();
-    expect(island.trees).toHaveLength(3);
-    expect(island.obstacles).toHaveLength(5);
-    // Bridge + staircase moved to GPU per-vertex warp (their materials are patched by
-    // applyRollingShaderTo) so they no longer appear in the CPU-rolled list.
-    expect(island.rollingObjects).toHaveLength(5);
+    // Hardcoded placeholder house / shop counter / bridge / staircase / fruit trees
+    // were removed during the terraforming refactor scene cleanup (Step 0). They
+    // come back as player-placed structures + props in Step 9.
+    expect(island.scene.getObjectByName('placeholder-house')).toBeUndefined();
+    expect(island.scene.getObjectByName('placeholder-shop-counter')).toBeUndefined();
+    expect(island.scene.getObjectByName('placeholder-bridge')).toBeUndefined();
+    expect(island.scene.getObjectByName('placeholder-staircase')).toBeUndefined();
+    expect(island.obstacles).toHaveLength(0);
+    expect(island.rollingObjects).toHaveLength(0);
     expect(island.surfaceMaps.splatMap.name).toBe('surface-splat-map');
     expect(island.surfaceMaps.aoMap.name).toBe('surface-ao-map');
     expect(island.surfaceMaps.cliffEdgeMap.name).toBe('surface-cliff-edge-map');
@@ -55,9 +59,15 @@ describe('createIslandScene', () => {
     expect(island.water.material.transparent).toBe(true);
     expect(island.water.material.depthWrite).toBe(false);
     expect(island.sky.material.customProgramCacheKey()).toBe('sky-dome:v3');
-    expect(island.ground.geometry.parameters.width).toBe(ISLAND_TERRAIN_WIDTH + 36);
-    expect(island.ground.geometry.parameters.height).toBe(ISLAND_TERRAIN_DEPTH + 36);
-    expect(island.house.position.distanceTo(island.shopCounter.position)).toBeGreaterThan(45);
+    // Step 3 ground mesh is built from the TerrainGrid: one quad (4 vertices, 6
+    // indices) per LAND or FRESHWATER cell. The bake produces ~4996 solid cells
+    // (4788 land + 208 freshwater) so the geometry should have ~19984 vertices
+    // and ~29976 indices. Bounds are loose because future bake tweaks may shift
+    // by a percent or two.
+    const positionAttr = island.ground.geometry.getAttribute('position');
+    expect(positionAttr.count).toBeGreaterThan(15000);
+    expect(positionAttr.count).toBeLessThan(25000);
+    expect(positionAttr.count % 4).toBe(0);
     expect(island.camera.name).toBe('main-camera');
   });
 
@@ -74,12 +84,15 @@ describe('createIslandScene', () => {
 describe('surface classification', () => {
   it('classifies the current island terrain from one shared source of truth', () => {
     expect(classifySurfaceAt(0, 0).kind).toBe('grass');
-    expect(classifySurfaceAt(39, 0).kind).toBe('sand');
-    expect(classifySurfaceAt(-10.4, 10).kind).toBe('dirt');
+    expect(classifySurfaceAt(43, 0).kind).toBe('sand');
+    // (-10.4, 10) used to fall on the hardcoded path-to-house dirt strip; that
+    // path was removed during the terraforming refactor cleanup, so the cell now
+    // classifies as plain inland grass.
+    expect(classifySurfaceAt(-10.4, 10).kind).toBe('grass');
     expect(classifySurfaceAt(0, 5).kind).toBe('riverbed');
     expect(classifySurfaceAt(-20, -15).kind).toBe('cliff');
 
-    expect(isOnSand(39, 0)).toBe(true);
+    expect(isOnSand(43, 0)).toBe(true);
     expect(isOnSand(0, 0)).toBe(false);
     expect(surfaceWeightAt(-20, -15, 'cliff')).toBe(1);
   });
@@ -139,7 +152,7 @@ describe('terrain splat material', () => {
     expect(material.name).toBe('terrain-splat');
     expect(material.vertexColors).toBe(false);
     expect(material.version).toBeGreaterThan(0);
-    expect(material.customProgramCacheKey()).toBe('terrain-splat:v17:4');
+    expect(material.customProgramCacheKey()).toBe('terrain-splat:v19:4');
   });
 
   it('exposes a stable custom program cache key per tile size', () => {
@@ -162,7 +175,7 @@ describe('stylized water material', () => {
     expect(material.name).toBe('water-stylized');
     expect(material.transparent).toBe(true);
     expect(material.depthWrite).toBe(false);
-    expect(material.customProgramCacheKey()).toBe('water-stylized:v50');
+    expect(material.customProgramCacheKey()).toBe('water-stylized:v54');
   });
 
   it('updates animation uniforms without recompiling the material', () => {
@@ -174,37 +187,37 @@ describe('stylized water material', () => {
     const uniforms = material.userData.waterUniforms;
     expect(uniforms.uTime.value).toBe(3.5);
     expect(uniforms.uWaveStrength.value).toBe(0.26);
-    expect(material.customProgramCacheKey()).toBe('water-stylized:v50');
+    expect(material.customProgramCacheKey()).toBe('water-stylized:v54');
   });
 });
 
 describe('cliff side mesh', () => {
-  it('builds the south wall and two east segments split around the staircase', () => {
+  it('builds merged cliff wall + lip meshes from grid tier discontinuities', () => {
     const island = createIslandScene();
 
     expect(island.cliffSideWalls.name).toBe('cliff-side-walls');
 
-    const wallNames = island.cliffSideWalls.children
+    const meshNames = island.cliffSideWalls.children
       .filter((child): child is THREE.Mesh => child instanceof THREE.Mesh)
       .map((mesh) => mesh.name);
 
-    expect(wallNames).toContain('cliff-side-south');
-    expect(wallNames).toContain('cliff-side-east-north');
-    expect(wallNames).toContain('cliff-side-east-south');
+    // The grid-driven builder produces one merged geometry for the painted
+    // rock faces and one for the grass overhang lips (no per-edge sub-meshes
+    // — that was the old hardcoded approach).
+    expect(meshNames).toContain('cliff-walls');
+    expect(meshNames).toContain('cliff-lips');
   });
 
-  it('places the south wall along the cliff southern edge at half cliff height', () => {
+  it('puts the cliff walls mesh in the scene with shadow-receive on, cast off', () => {
     const island = createIslandScene();
-    const south = island.cliffSideWalls.getObjectByName('cliff-side-south') as THREE.Mesh;
+    const walls = island.cliffSideWalls.getObjectByName('cliff-walls') as THREE.Mesh;
 
-    expect(south).toBeDefined();
-    expect(south.position.y).toBeCloseTo(0.5);
-    expect(south.position.z).toBeCloseTo(-8);
+    expect(walls).toBeDefined();
     // GPU-warped meshes can't cast shadows correctly (depth pass uses unwarped
     // geometry → ghost shadows on the terrain). createIslandScene disables castShadow
     // on every cliff side mesh after attaching the rolling shader.
-    expect(south.castShadow).toBe(false);
-    expect(south.receiveShadow).toBe(true);
+    expect(walls.castShadow).toBe(false);
+    expect(walls.receiveShadow).toBe(true);
   });
 });
 
@@ -265,7 +278,7 @@ describe('decal system', () => {
 describe('player surface decals', () => {
   it('spawns a footprint after walking the step interval on sand', () => {
     const island = createIslandScene();
-    const sandX = 39;
+    const sandX = 43;
     const sandZ = 0;
 
     island.player.position.set(sandX, 0, sandZ);
@@ -336,18 +349,17 @@ describe('player movement', () => {
     expect(island.player.position.z).toBe(-GROUND_HALF_DEPTH);
   });
 
-  it('pushes the player away from landmark obstacle circles', () => {
+  it('pushes the player away from a synthetic obstacle circle', () => {
     const island = createIslandScene();
-    const treeObstacle = island.obstacles.find((obstacle) => obstacle.name === 'fruit-tree-1');
+    const synthetic = { name: 'synthetic-obstacle', x: 4, z: 4, radius: 1.0 };
+    island.obstacles.push(synthetic);
 
-    expect(treeObstacle).toBeDefined();
-
-    island.player.position.set(treeObstacle?.x ?? 0, 0, treeObstacle?.z ?? 0);
+    island.player.position.set(synthetic.x, 0, synthetic.z);
     resolveCircleObstacles(island.player.position, island.obstacles);
 
     const distance = Math.hypot(
-      island.player.position.x - (treeObstacle?.x ?? 0),
-      island.player.position.z - (treeObstacle?.z ?? 0),
+      island.player.position.x - synthetic.x,
+      island.player.position.z - synthetic.z,
     );
 
     expect(distance).toBeGreaterThan(1);

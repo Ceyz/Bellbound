@@ -90,7 +90,7 @@ export function createTerrainSplatMaterial(options: TerrainSplatOptions): THREE.
       .replace('#include <map_fragment>', FRAGMENT_SPLAT_BODY);
   };
 
-  material.customProgramCacheKey = () => `terrain-splat:v17:${tileSizeMeters}`;
+  material.customProgramCacheKey = () => `terrain-splat:v19:${tileSizeMeters}`;
   material.needsUpdate = true;
 
   return material;
@@ -184,9 +184,12 @@ float terrainIslandSDF(vec2 wxz) {
 const FRAGMENT_SPLAT_BODY = `
 vec2 splatUv = (vTerrainWorldXZ + uTerrainExtents * 0.5) / uTerrainExtents;
 
-// Analytical signed SDF, shared with the ocean shader. This avoids texel-quantized
-// coastline alpha from the baked shoreDistanceMap, which could still read as small
-// stairs at grazing camera angles.
+// Reverted to analytical SDF after Step 3 round 2 texture-sample swap exposed
+// a visible regression on the inland grass area (the R8 quantization at 8-bit
+// resolution × 8m range = 6cm steps interacted with shoreCoverage's smoothstep
+// in a way that washed grass to near-white). Will swap to the texture again
+// once the bake uses higher precision (R16 or signed-distance JFA) and the
+// shader's shoreCoverage is recomputed against grid-cell granularity.
 float signedShoreMeters = terrainIslandSDF(vTerrainWorldXZ);
 // Hard offshore cull: fragments past SDF=0 are discarded so the underwater sand
 // shelf cannot leak its triangulation under the transparent water.

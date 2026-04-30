@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { HEIGHTMAP, STAIRCASE } from './heightmap';
+import { HEIGHTMAP } from './heightmap';
 import type { SurfaceTextureSet } from './proceduralTextures';
 
 /**
@@ -49,9 +49,6 @@ export function createCliffSideMesh(surfaceTextures: SurfaceTextureSet): THREE.G
   const xMin = HEIGHTMAP.CLIFF_X_MIN;
   const zMin = HEIGHTMAP.CLIFF_Z_MIN;
 
-  const stairZMin = STAIRCASE.zCenter - STAIRCASE.halfWidth;
-  const stairZMax = STAIRCASE.zCenter + STAIRCASE.halfWidth;
-
   const wallMaterial = new THREE.MeshStandardMaterial({
     map: surfaceTextures.cliffSide,
     roughness: 0.94,
@@ -73,26 +70,14 @@ export function createCliffSideMesh(surfaceTextures: SurfaceTextureSet): THREE.G
   group.add(southWall);
   group.add(buildSouthLip(southLength, southCenterX, zMax, cliffHeight, lipMaterial));
 
-  // East-facing edge at x = xMax, split around the staircase opening.
-  // North segment runs from zMin to stairZMin.
-  const eastNorthLength = stairZMin - zMin + EDGE_OVERLAP_METERS;
-  if (eastNorthLength > 0.05) {
-    const centerZ = (zMin - EDGE_OVERLAP_METERS + stairZMin) / 2;
-    const eastNorth = buildWallQuad(eastNorthLength, cliffHeight, wallMaterial, 'cliff-side-east-north', 'east');
-    eastNorth.position.set(xMax, cliffHeight / 2, centerZ);
-    group.add(eastNorth);
-    group.add(buildEastLip(eastNorthLength, centerZ, xMax, cliffHeight, lipMaterial, 'cliff-side-east-north-lip'));
-  }
-
-  // South segment runs from stairZMax to zMax.
-  const eastSouthLength = zMax - stairZMax + EDGE_OVERLAP_METERS;
-  if (eastSouthLength > 0.05) {
-    const centerZ = (stairZMax + zMax + EDGE_OVERLAP_METERS) / 2;
-    const eastSouth = buildWallQuad(eastSouthLength, cliffHeight, wallMaterial, 'cliff-side-east-south', 'east');
-    eastSouth.position.set(xMax, cliffHeight / 2, centerZ);
-    group.add(eastSouth);
-    group.add(buildEastLip(eastSouthLength, centerZ, xMax, cliffHeight, lipMaterial, 'cliff-side-east-south-lip'));
-  }
+  // East-facing edge at x = xMax: continuous wall (the staircase opening that used to
+  // split it was removed during the terraforming refactor scene cleanup).
+  const eastLength = zMax - zMin + EDGE_OVERLAP_METERS * 2;
+  const eastCenterZ = (zMin + zMax) / 2;
+  const eastWall = buildWallQuad(eastLength, cliffHeight, wallMaterial, 'cliff-side-east', 'east');
+  eastWall.position.set(xMax, cliffHeight / 2, eastCenterZ);
+  group.add(eastWall);
+  group.add(buildEastLip(eastLength, eastCenterZ, xMax, cliffHeight, lipMaterial, 'cliff-side-east-lip'));
 
   // West-facing edge at x = xMin: new with the trimmed cliff zone. Without this
   // segment the plateau would have an open side facing the rest of the island.

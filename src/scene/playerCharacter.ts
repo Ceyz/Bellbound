@@ -28,7 +28,7 @@ export const ALL_ANIMATIONS: AnimationName[] = [
 export interface PlayerCharacter {
   root: THREE.Object3D;
   mixer: THREE.AnimationMixer;
-  setAnimation(name: AnimationName, fadeMs?: number): void;
+  setAnimation(name: AnimationName, fadeMs?: number, timeScale?: number): void;
   getCurrentAnimation(): AnimationName | null;
   update(delta: number): void;
 }
@@ -89,8 +89,13 @@ export async function loadPlayerCharacter(): Promise<PlayerCharacter> {
   let currentAction: THREE.AnimationAction | null = null;
   let currentName: AnimationName | null = null;
 
-  function setAnimation(name: AnimationName, fadeMs: number = 200) {
-    if (currentName === name) return;
+  function setAnimation(name: AnimationName, fadeMs: number = 200, timeScale: number = 1) {
+    if (currentName === name) {
+      // Same clip, but allow live tweaking of playback speed (e.g. faster picking_up).
+      const action = actions.get(name);
+      if (action) action.setEffectiveTimeScale(timeScale);
+      return;
+    }
     const newAction = actions.get(name);
     if (!newAction) return;
 
@@ -98,7 +103,7 @@ export async function loadPlayerCharacter(): Promise<PlayerCharacter> {
     if (currentAction) {
       currentAction.fadeOut(fadeS);
     }
-    newAction.reset().fadeIn(fadeS).play();
+    newAction.reset().setEffectiveTimeScale(timeScale).fadeIn(fadeS).play();
     currentAction = newAction;
     currentName = name;
   }

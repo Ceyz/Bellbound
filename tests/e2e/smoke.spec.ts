@@ -59,13 +59,14 @@ test('renders the prototype canvas', async ({ page }, testInfo) => {
     expect.arrayContaining([
       'greybox-ground',
       'greybox-player',
-      'placeholder-house',
-      'placeholder-shop-counter',
-      'fruit-tree-1',
-      'fruit-tree-2',
-      'fruit-tree-3',
     ]),
   );
+  // Hardcoded placeholder house / shop / bridge / staircase / fruit trees were
+  // removed during the terraforming refactor scene cleanup (Step 0 of the plan).
+  expect(sceneObjectNames).not.toContain('placeholder-house');
+  expect(sceneObjectNames).not.toContain('placeholder-shop-counter');
+  expect(sceneObjectNames).not.toContain('placeholder-bridge');
+  expect(sceneObjectNames).not.toContain('placeholder-staircase');
 
   await page.waitForFunction(() => {
     const scene = document.querySelector<HTMLCanvasElement>('#scene');
@@ -80,6 +81,27 @@ test('renders the prototype canvas', async ({ page }, testInfo) => {
 
   expect(Math.round(box.width)).toBe(viewport?.width);
   expect(Math.round(box.height)).toBe(viewport?.height);
+
+  // Wait for the WebGL canvas to render a non-blank frame before sampling. Without
+  // this, gl.readPixels can return alpha=0 if it fires between page load and the
+  // first rAF tick (the fail-mode previously seen on desktop CI).
+  await page.waitForFunction(
+    () => {
+      const canvas = document.querySelector<HTMLCanvasElement>('#scene');
+      if (!canvas) return false;
+      const gl = canvas.getContext('webgl2') ?? canvas.getContext('webgl');
+      if (!gl) return false;
+      const px = new Uint8Array(4);
+      gl.readPixels(
+        Math.floor(gl.drawingBufferWidth / 2),
+        Math.floor(gl.drawingBufferHeight / 2),
+        1, 1, gl.RGBA, gl.UNSIGNED_BYTE, px,
+      );
+      return px[3] > 0;
+    },
+    null,
+    { timeout: 10_000 },
+  );
 
   const samples = await sampleCanvasPixels(page);
   const distinctSamples = new Set(samples.map((pixel) => pixel.join(',')));

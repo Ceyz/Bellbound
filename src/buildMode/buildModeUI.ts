@@ -56,7 +56,7 @@ export function mountBuildModeUI(buildMode: BuildMode): HTMLElement {
       statusBar.classList.add('build-status-visible');
       const label = statusBar.querySelector<HTMLElement>('.build-status-label');
       if (label && state.kind) {
-        label.textContent = `Placement : ${state.kind === 'tree' ? 'Arbre' : 'Rocher'}`;
+        label.textContent = `Outil : ${buildMode.getLabel(state.kind)}`;
       }
     } else {
       statusBar.classList.remove('build-status-visible');
@@ -118,12 +118,12 @@ function createModal(buildMode: BuildMode, onClose: () => void): HTMLElement {
 
   const header = document.createElement('div');
   header.className = 'build-modal-header';
-  header.textContent = 'Décorer mon île';
+  header.textContent = 'Construction';
   panel.appendChild(header);
 
   const subtitle = document.createElement('div');
   subtitle.className = 'build-modal-subtitle';
-  subtitle.textContent = 'Sélectionnez un objet à placer sur votre île.';
+  subtitle.textContent = 'Sélectionnez un outil.';
   panel.appendChild(subtitle);
 
   const grid = document.createElement('div');
@@ -195,23 +195,16 @@ function createItemCard(item: BuildItemInfo, onClick: () => void): HTMLElement {
   return card;
 }
 
-function renderItemVisual(kind: BuildKind): string {
-  if (kind === 'tree') {
-    // Stylized tree silhouette — green canopy + brown trunk.
-    return `
-      <svg viewBox="0 0 48 48" width="46" height="46" aria-hidden="true">
-        <ellipse cx="24" cy="18" rx="14" ry="12" fill="#8cc87a"/>
-        <ellipse cx="24" cy="14" rx="10" ry="8" fill="#a8d5a2"/>
-        <rect x="21" y="26" width="6" height="14" rx="1.2" fill="#a07850"/>
-      </svg>
-    `;
-  }
-  // Rock visual — chunky low-poly silhouette.
+function renderItemVisual(_kind: BuildKind): string {
+  // Generic placeholder — Step 5 registers terraforming tools (cliff_raise,
+  // water_dig, etc.) and provides per-tool icons. Until then no item is ever
+  // listed (`BuildMode.listItems()` returns []) so this fallback is never
+  // actually reached, but keeping a neutral icon avoids a tree/rock visual
+  // accidentally showing if a future tool is registered without an icon.
   return `
     <svg viewBox="0 0 48 48" width="46" height="46" aria-hidden="true">
-      <polygon points="10,36 16,18 28,12 38,20 42,32 36,40 14,40" fill="#b8956a"/>
-      <polygon points="14,40 20,28 28,30 36,40" fill="#a07850"/>
-      <polygon points="22,18 28,12 30,20 24,22" fill="#c8c0b0"/>
+      <rect x="10" y="10" width="28" height="28" rx="6" fill="#d4a878"/>
+      <rect x="16" y="16" width="16" height="16" rx="3" fill="#fff8f0"/>
     </svg>
   `;
 }

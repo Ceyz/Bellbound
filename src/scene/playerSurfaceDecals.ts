@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import { isOnSand } from './surfaceClassification';
-import { isInRiver, isOnBridge } from './heightmap';
+import { isInRiver } from './heightmap';
 import {
   createDecalSystem,
   spawnDecal,
@@ -147,11 +147,12 @@ function trackRiverContact(
 ): void {
   if (elapsed - state.lastRippleAt < RIPPLE_MIN_INTERVAL_SECONDS) return;
 
-  // Trigger when the *unresolved* position would have entered the river off-bridge —
-  // i.e., the player tried to wade in and got pushed back by `pushPlayerOutOfRiver`.
+  // Trigger when the *unresolved* position would have entered the river — the player
+  // tried to wade in and got pushed back by `pushPlayerOutOfRiver`. (Bridge passage
+  // was removed during the terraforming refactor scene cleanup; until player-placed
+  // bridges land in Step 9, all river entries trigger a ripple.)
   const tried = isInRiver(preResolvePosition.x, preResolvePosition.z);
-  const onBridge = isOnBridge(preResolvePosition.x, preResolvePosition.z);
-  if (!tried || onBridge) return;
+  if (!tried) return;
 
   state.lastRippleAt = elapsed;
 

@@ -67,11 +67,14 @@ export function sampleIslandSDF(x: number, z: number): number {
 
 export function sampleIslandShape(x: number, z: number): IslandShape {
   const sdf = sampleIslandSDF(x, z);
+  // Step 2 façade: `isLand` STAYS analytical (continuous SDF) so the splat bake
+  // and the splat shader's offshore-discard agree on the shoreline. The grid
+  // quantizes LAND/OCEAN at 1 m, which would expose strips of sand/grass mesh
+  // along the cell boundary near the analytical shoreline. Step 3 unifies both
+  // via the grid-derived `shoreDistanceMap` and this analytical SDF goes away.
   const isLand = sdf <= 0;
   const shoreDistance = Math.abs(sdf);
 
-  // beachT = 0 deep inland (more than BEACH_TRANSITION from shore)
-  // beachT = 1 at the shoreline and beyond
   const beachT = isLand
     ? Math.min(1, Math.max(0, 1 - shoreDistance / BEACH_TRANSITION_METERS))
     : 1;
