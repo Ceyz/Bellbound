@@ -152,7 +152,7 @@ describe('terrain splat material', () => {
     expect(material.name).toBe('terrain-splat');
     expect(material.vertexColors).toBe(false);
     expect(material.version).toBeGreaterThan(0);
-    expect(material.customProgramCacheKey()).toBe('terrain-splat:v19:4');
+    expect(material.customProgramCacheKey()).toBe('terrain-splat:v21:4');
   });
 
   it('exposes a stable custom program cache key per tile size', () => {

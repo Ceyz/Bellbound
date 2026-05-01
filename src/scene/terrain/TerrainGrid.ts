@@ -197,6 +197,28 @@ export class TerrainGrid {
   }
 
   /**
+   * Raw packed byte for a cell. Used by the undo system to snapshot an exact
+   * pre-edit state cheaply (one byte vs. an unpacked struct), independent of
+   * which fields the edit will mutate.
+   */
+  getRawByte(cx: number, cz: number): number {
+    if (!this.cellInBounds(cx, cz)) return 0;
+    return this.data[cz * this.width + cx];
+  }
+
+  /**
+   * Restore a cell to a previously-snapshotted byte. Bypasses the AC rule
+   * predicates because undo restores known-valid prior state — re-running
+   * `raiseCell` etc. would refuse if the grid evolved in between (e.g. a
+   * neighbor was raised, making the original lower legal again).
+   */
+  setRawByte(cx: number, cz: number, byte: number): void {
+    if (!this.cellInBounds(cx, cz)) return;
+    this.data[cz * this.width + cx] = byte;
+    this.dirtyRegions.push({ cxMin: cx, czMin: cz, cxMax: cx, czMax: cz });
+  }
+
+  /**
    * Raise a LAND cell by one tier. AC-style rules:
    *   - target must be LAND (not OCEAN, FRESHWATER, or VOID).
    *   - target must be in bounds.
@@ -241,14 +263,14 @@ export class TerrainGrid {
   }
 
   /**
-   * Convert a LAND cell to FRESHWATER at its current tier. AC v3-permissive
-   * rules (no adjacency required — the first tile of a new pond is legal):
+   * Convert a LAND cell to FRESHWATER at its current tier. Permissive rules:
    *   - target must be LAND in bounds.
-   *   - target must NOT be at the foot of a higher tier cell (no 4-neighbor
-   *     at strictly higher tier), so digging doesn't create a "trapped under
-   *     the cliff" pond that would render as a triangular gap in the cliff
-   *     side mesh. Players who want a tiered pond can raise the surrounding
-   *     terrain first, then dig at the higher tier.
+   *
+   * Adjacency to existing water is NOT required (the first tile of a new pond
+   * is legal). The previously enforced "no digging at cliff foot" rule was
+   * removed because that's exactly the AC pattern for setting up a waterfall:
+   * dig water adjacent to a higher LAND tier and the existing waterfall mesh
+   * builder generates the cascade automatically at the cliff edge.
    *
    * Tier is preserved: if the LAND cell was T1 (raised plateau), the
    * FRESHWATER cell is also T1, with its bed at `tierHeight(T1) - 0.5 m`.
@@ -257,16 +279,10 @@ export class TerrainGrid {
     if (!this.cellInBounds(cx, cz)) return { reason: 'out_of_bounds' };
     const cell = this.getCell(cx, cz);
     if (cell.surface !== Surface.LAND) return { reason: 'not_land' };
-    for (const [dx, dz] of [[1, 0], [-1, 0], [0, 1], [0, -1]] as const) {
-      const nx = cx + dx;
-      const nz = cz + dz;
-      if (!this.cellInBounds(nx, nz)) continue;
-      const nSurface = this.getSurface(nx, nz);
-      if (nSurface === Surface.LAND && this.getTier(nx, nz) > cell.tier) {
-        return { reason: 'cliff_foot' };
-      }
-    }
-    this.setCell(cx, cz, { ...cell, surface: Surface.FRESHWATER });
+    // Drop the path field on conversion: paths are illegal on water, and
+    // keeping the byte hidden under FRESHWATER would either leak into
+    // pathMask reads or pop back when the cell is filled to LAND again.
+    this.setCell(cx, cz, { ...cell, surface: Surface.FRESHWATER, path: 0 });
     return null;
   }
 
@@ -283,11 +299,31 @@ export class TerrainGrid {
     return null;
   }
 
-  paintPath(_cx: number, _cz: number, _kind: PathKind): EditError | null {
-    throw new Error('TerrainGrid.paintPath: not yet implemented (Step 7)');
+  /**
+   * Paint a path style onto a LAND cell. Step 7 ships the basic predicate:
+   *   - target must be LAND in bounds (paths don't go on water or VOID).
+   *   - kind must fit in 4 bits (0..15).
+   * The cell's `tier` and `surface` are preserved; only the `path` byte
+   * field is updated.
+   */
+  paintPath(cx: number, cz: number, kind: PathKind): EditError | null {
+    if (!this.cellInBounds(cx, cz)) return { reason: 'out_of_bounds' };
+    if (kind < 0 || kind > 15) return { reason: 'invalid_path_kind' };
+    const cell = this.getCell(cx, cz);
+    if (cell.surface !== Surface.LAND) return { reason: 'not_land' };
+    if (cell.path === kind) return null; // no-op (same style); keep it idempotent
+    this.setCell(cx, cz, { ...cell, path: kind });
+    return null;
   }
-  erasePath(_cx: number, _cz: number): EditError | null {
-    throw new Error('TerrainGrid.erasePath: not yet implemented (Step 7)');
+
+  /** Clear any painted path on a LAND cell. */
+  erasePath(cx: number, cz: number): EditError | null {
+    if (!this.cellInBounds(cx, cz)) return { reason: 'out_of_bounds' };
+    const cell = this.getCell(cx, cz);
+    if (cell.surface !== Surface.LAND) return { reason: 'not_land' };
+    if (cell.path === 0) return null; // already empty
+    this.setCell(cx, cz, { ...cell, path: 0 });
+    return null;
   }
 
   // ─── Iteration helpers (consumed by Step 3+ mesh builders) ─────────────

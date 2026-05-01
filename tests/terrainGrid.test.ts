@@ -429,13 +429,14 @@ describe('TerrainGrid — digFreshwater / fillFreshwater (Step 6)', () => {
     expect(grid.getCell(cx, cz)).toEqual({ surface: Surface.FRESHWATER, tier: Tier.T1, path: 0 });
   });
 
-  it('digFreshwater refuses at the foot of a cliff (4-neighbor strictly higher tier)', () => {
+  it('digFreshwater is allowed at the foot of a cliff (waterfall setup)', () => {
     const grid = freshGrid();
     const cx = 47, cz = 39;
-    grid.raiseCell(cx, cz);          // T0 → T1
-    // (cx + 1, cz) is still T0; digging there would put water at the foot of
-    // the T1 cell next to it, which is rejected.
-    expect(grid.digFreshwater(cx + 1, cz)?.reason).toBe('cliff_foot');
+    grid.raiseCell(cx, cz); // T0 → T1
+    // Digging at (cx + 1, cz) puts water adjacent to the T1 cell, which is
+    // exactly the AC pattern for triggering an auto-generated waterfall.
+    expect(grid.digFreshwater(cx + 1, cz)).toBeNull();
+    expect(grid.getSurface(cx + 1, cz)).toBe(Surface.FRESHWATER);
   });
 
   it('digFreshwater refuses non-LAND cells (FRESHWATER, OCEAN, out-of-bounds)', () => {
@@ -443,6 +444,20 @@ describe('TerrainGrid — digFreshwater / fillFreshwater (Step 6)', () => {
     const [riverCx, riverCz] = grid.worldToCell(0, 5);
     expect(grid.digFreshwater(riverCx, riverCz)?.reason).toBe('not_land');
     expect(grid.digFreshwater(-1, 0)?.reason).toBe('out_of_bounds');
+  });
+
+  it('digFreshwater clears the path field (paths are illegal on water)', () => {
+    const grid = freshGrid();
+    const cx = 47, cz = 39;
+    grid.paintPath(cx, cz, 5); // arbitrary path style
+    expect(grid.getCell(cx, cz).path).toBe(5);
+    grid.digFreshwater(cx, cz);
+    const after = grid.getCell(cx, cz);
+    expect(after.surface).toBe(Surface.FRESHWATER);
+    expect(after.path).toBe(0);
+    // Filling back to LAND must NOT resurrect the old path byte.
+    grid.fillFreshwater(cx, cz);
+    expect(grid.getCell(cx, cz).path).toBe(0);
   });
 
   it('fillFreshwater reverts FRESHWATER to LAND at the same tier', () => {
@@ -467,6 +482,64 @@ describe('TerrainGrid — digFreshwater / fillFreshwater (Step 6)', () => {
     const grid = freshGrid();
     expect(grid.fillFreshwater(47, 39)?.reason).toBe('not_freshwater');
     expect(grid.fillFreshwater(-1, 0)?.reason).toBe('out_of_bounds');
+  });
+});
+
+describe('TerrainGrid — paintPath / erasePath (Step 7)', () => {
+  function freshGrid(): TerrainGrid {
+    return TerrainGrid.bakeFromAnalytical();
+  }
+
+  it('paintPath sets the path field on a LAND cell', () => {
+    const grid = freshGrid();
+    const cx = 47, cz = 39;
+    expect(grid.getCell(cx, cz).path).toBe(0);
+    expect(grid.paintPath(cx, cz, 1)).toBeNull();
+    const after = grid.getCell(cx, cz);
+    expect(after.path).toBe(1);
+    expect(after.surface).toBe(Surface.LAND);
+    expect(after.tier).toBe(Tier.T0);
+  });
+
+  it('paintPath preserves tier when the cell is on a raised cliff', () => {
+    const grid = freshGrid();
+    const cx = 47, cz = 39;
+    grid.raiseCell(cx, cz); // T0 → T1
+    expect(grid.paintPath(cx, cz, 3)).toBeNull();
+    const after = grid.getCell(cx, cz);
+    expect(after.tier).toBe(Tier.T1);
+    expect(after.path).toBe(3);
+  });
+
+  it('paintPath is idempotent on the same style', () => {
+    const grid = freshGrid();
+    grid.paintPath(47, 39, 2);
+    grid.consumeDirtyRegions();
+    grid.paintPath(47, 39, 2); // same style, should be a no-op
+    expect(grid.consumeDirtyRegions()).toHaveLength(0);
+  });
+
+  it('paintPath refuses non-LAND cells, out-of-bounds, and bad kinds', () => {
+    const grid = freshGrid();
+    const [riverCx, riverCz] = grid.worldToCell(0, 5);
+    expect(grid.paintPath(riverCx, riverCz, 1)?.reason).toBe('not_land');
+    expect(grid.paintPath(-1, 0, 1)?.reason).toBe('out_of_bounds');
+    expect(grid.paintPath(47, 39, 16)?.reason).toBe('invalid_path_kind');
+    expect(grid.paintPath(47, 39, -1)?.reason).toBe('invalid_path_kind');
+  });
+
+  it('erasePath clears the path field', () => {
+    const grid = freshGrid();
+    grid.paintPath(47, 39, 5);
+    expect(grid.erasePath(47, 39)).toBeNull();
+    expect(grid.getCell(47, 39).path).toBe(0);
+  });
+
+  it('erasePath is a no-op when path is already 0', () => {
+    const grid = freshGrid();
+    grid.consumeDirtyRegions();
+    grid.erasePath(47, 39);
+    expect(grid.consumeDirtyRegions()).toHaveLength(0);
   });
 });
 

@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import { ISLAND_TERRAIN_DEPTH, ISLAND_TERRAIN_WIDTH } from '../player/movement';
 import { classifySurfaceAt, SURFACE_SPLAT_CHANNELS, type SurfaceClassification } from './surfaceClassification';
+import { GRID_D, GRID_W, getTerrainGrid } from './terrain/TerrainGrid';
 
 export interface SurfaceMaps {
   aoMap: THREE.DataTexture;
@@ -8,6 +9,13 @@ export interface SurfaceMaps {
   /** Distance-to-ocean only (excludes the river). Drives the shoreWashMesh alpha so
    * the wave ribbon sweeps onto the outer beach without contaminating the river bank. */
   oceanShoreMask: THREE.DataTexture;
+  /**
+   * Path overlay mask (Step 7). 94 × 78 R8 NearestFilter — grid-native (one
+   * texel per cell) so painting a path is a single byte write per cell with
+   * no analytical resampling. Byte value = the cell's `path` field (0 = no
+   * path, 1..15 = path style index).
+   */
+  pathMask: THREE.DataTexture;
   resolution: number;
   /** River-only mask. Keeps ocean water from inheriting the inner-river palette. */
   riverMask: THREE.DataTexture;
@@ -101,10 +109,31 @@ export function createSurfaceMaps(resolution = DEFAULT_SURFACE_MAP_RESOLUTION): 
   );
   const riverMask = makeLinearFilteredMap(riverData, resolution, 'surface-river-mask');
 
+  // Path mask — grid-native 94 × 78 R8 NearestFilter. One byte per cell stores
+  // the cell's `path` field directly. The splat shader maps fragment world XZ
+  // → cell index → texel and overlays the path color when path > 0.
+  const pathData = new Uint8Array(GRID_W * GRID_D);
+  const grid = getTerrainGrid();
+  grid.forEachCell((cx, cz, cell) => {
+    pathData[cz * GRID_W + cx] = cell.path & 0x0F;
+  });
+  const pathMask = new THREE.DataTexture(
+    pathData, GRID_W, GRID_D, THREE.RedFormat, THREE.UnsignedByteType,
+  );
+  pathMask.name = 'surface-path-mask';
+  pathMask.magFilter = THREE.NearestFilter;
+  pathMask.minFilter = THREE.NearestFilter;
+  pathMask.wrapS = THREE.ClampToEdgeWrapping;
+  pathMask.wrapT = THREE.ClampToEdgeWrapping;
+  pathMask.unpackAlignment = 1;
+  pathMask.generateMipmaps = false;
+  pathMask.needsUpdate = true;
+
   return {
     aoMap: createDataTexture(aoData, resolution, THREE.RedFormat, 'surface-ao-map'),
     cliffEdgeMap: createDataTexture(cliffEdgeData, resolution, THREE.RedFormat, 'surface-cliff-edge-map'),
     oceanShoreMask,
+    pathMask,
     resolution,
     riverMask,
     shoreDistanceMap,

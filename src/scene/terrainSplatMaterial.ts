@@ -3,6 +3,7 @@ import { ISLAND_TERRAIN_DEPTH, ISLAND_TERRAIN_WIDTH } from '../player/movement';
 import { ISLAND_SHAPE } from './islandShape';
 import type { SurfaceTextureSet } from './proceduralTextures';
 import { MAX_SHORE_DISTANCE_METERS, type SurfaceMaps } from './surfaceMaps';
+import { GRID_D, GRID_W, TERRAIN_ORIGIN } from './terrain/TerrainGrid';
 
 /**
  * Terrain ground material: splat-textured with anti-tiling.
@@ -53,6 +54,9 @@ export function createTerrainSplatMaterial(options: TerrainSplatOptions): THREE.
     uCliffEdgeMap: { value: options.surfaceMaps.cliffEdgeMap },
     uShoreMask: { value: options.surfaceMaps.shoreMask },
     uShoreDistanceMap: { value: options.surfaceMaps.shoreDistanceMap },
+    uPathMask: { value: options.surfaceMaps.pathMask },
+    uPathOrigin: { value: new THREE.Vector2(TERRAIN_ORIGIN.x, TERRAIN_ORIGIN.z) },
+    uPathGridSize: { value: new THREE.Vector2(GRID_W, GRID_D) },
     uTexGrass: { value: options.surfaceTextures.grass },
     uTexSand: { value: options.surfaceTextures.sand },
     uTexDirt: { value: options.surfaceTextures.dirtPath },
@@ -90,7 +94,7 @@ export function createTerrainSplatMaterial(options: TerrainSplatOptions): THREE.
       .replace('#include <map_fragment>', FRAGMENT_SPLAT_BODY);
   };
 
-  material.customProgramCacheKey = () => `terrain-splat:v19:${tileSizeMeters}`;
+  material.customProgramCacheKey = () => `terrain-splat:v21:${tileSizeMeters}`;
   material.needsUpdate = true;
 
   return material;
@@ -128,6 +132,9 @@ uniform sampler2D uAoMap;
 uniform sampler2D uCliffEdgeMap;
 uniform sampler2D uShoreMask;
 uniform sampler2D uShoreDistanceMap;
+uniform sampler2D uPathMask;
+uniform vec2 uPathOrigin;
+uniform vec2 uPathGridSize;
 uniform sampler2D uTexGrass;
 uniform sampler2D uTexSand;
 uniform sampler2D uTexDirt;
@@ -300,6 +307,41 @@ float sandSideShadow = gsRim * pickSand;
 float grassSideHilight = gsRim * pickGrass;
 surfaceColor *= mix(1.0, 0.72, sandSideShadow);
 surfaceColor *= mix(1.0, 1.12, grassSideHilight);
+
+// --- Path overlay (Step 7) ------------------------------------------------------
+// Player-painted paths come from a grid-native 94×78 R8 NearestFilter texture
+// (one texel per cell). When a fragment falls in a cell with path > 0, swap
+// the base surfaceColor for the dirt texture re-tinted per path style. The
+// dirt sample provides the noisy organic pattern; the per-style tint shifts
+// hue/saturation so the four MVP styles read as distinctly as possible
+// without paying the cost of four separate albedo textures:
+//   1 = dirt    (warm brown,  unchanged)
+//   2 = stone   (cool grey,   slightly desaturated)
+//   3 = brick   (terracotta,  saturated red)
+//   4 = planks  (warm tan,    yellow-shifted)
+vec2 pathUv = (vTerrainWorldXZ - uPathOrigin) / uPathGridSize;
+if (pathUv.x >= 0.0 && pathUv.x <= 1.0 && pathUv.y >= 0.0 && pathUv.y <= 1.0) {
+  float pathByte = texture2D(uPathMask, pathUv).r;
+  float pathKind = floor(pathByte * 255.0 + 0.5);
+  if (pathKind > 0.5) {
+    vec3 pathBase = sampleAntiTiled(uTexDirt, vTerrainWorldXZ, antiTileBlend);
+    // Average dirt-sample luminance — used to reproject the texture into a
+    // luma-matched tint so the per-style color reads its hue while the
+    // pattern keeps the same value range as bare dirt.
+    float luma = dot(pathBase, vec3(0.299, 0.587, 0.114));
+    vec3 tint;
+    if (pathKind < 1.5) {
+      tint = pathBase;                              // 1 — dirt
+    } else if (pathKind < 2.5) {
+      tint = vec3(0.62, 0.62, 0.62) * (luma * 1.55); // 2 — stone (cool grey)
+    } else if (pathKind < 3.5) {
+      tint = vec3(0.78, 0.30, 0.22) * (luma * 1.55); // 3 — brick (terracotta)
+    } else {
+      tint = vec3(0.78, 0.58, 0.32) * (luma * 1.55); // 4 — planks (warm tan)
+    }
+    surfaceColor = tint;
+  }
+}
 
 surfaceColor *= 1.0 - ao * 0.4;
 surfaceColor = mix(surfaceColor, surfaceColor * vec3(0.55, 0.42, 0.32), cliffEdge * 0.6);

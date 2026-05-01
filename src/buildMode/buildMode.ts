@@ -53,9 +53,11 @@ type ChangeListener = (state: BuildModeState) => void;
 
 const TILE_SIZE = 1;
 
-/** Cursor mesh tints. */
-const CURSOR_VALID_COLOR = 0x78c878;
-const CURSOR_INVALID_COLOR = 0xe87860;
+/** Cursor mesh tints. Bright/saturated so they stay readable in midday lighting. */
+const CURSOR_VALID_COLOR = 0x30ff50;
+const CURSOR_INVALID_COLOR = 0xff3838;
+/** Dark halo drawn underneath the colored cursor for guaranteed contrast. */
+const CURSOR_HALO_COLOR = 0x000000;
 
 export class BuildMode {
   private scene: THREE.Scene;
@@ -206,8 +208,25 @@ export class BuildMode {
     const tool = this.tools.get(this.kind);
     if (!tool) return false;
     const [cx, cz] = this.cursorCell;
+    // Authoritative refusal: a red cursor must never mutate the grid. We
+    // re-run canApply rather than trusting the cached `cursorValid`, which
+    // is computed in update() and could be one frame stale relative to the
+    // click — especially on touch where pointerdown fires before any
+    // pointermove. Mirrors the rule each tool publishes.
+    if (!tool.canApply(cx, cz)) return false;
     const error = tool.apply(cx, cz);
     return error === null;
+  }
+
+  /**
+   * Read-only accessor to the cell the cursor is currently snapped to. Returns
+   * null when the cursor isn't on a valid grid cell. Used by the drag-to-paint
+   * loop in main.ts to dedupe per-cell applications.
+   */
+  getCursorCell(): [number, number] | null {
+    if (!this.cursor?.visible) return null;
+    if (this.cursorCell[0] < 0 || this.cursorCell[1] < 0) return null;
+    return [this.cursorCell[0], this.cursorCell[1]];
   }
 
   /** Subscribe to mode changes. Returns unsub. */
@@ -231,16 +250,31 @@ export class BuildMode {
 
 /**
  * Cell-edge wireframe cursor. 1 m × 1 m on the XZ plane, four edges drawn as
- * line segments (LineSegments + LineBasicMaterial). Centered at origin so
- * `update()` can position it via `mesh.position.set()` to the cell center.
+ * line segments. A slightly larger black halo is added as a child so the
+ * colored outline reads against bright sand / midday lighting. Centered at
+ * origin so `update()` can position it via `mesh.position.set()`.
  *
- * Rendered with `depthTest = false` and `renderOrder = 100` so the outline is
- * drawn on top of every terrain mesh — guarantees the cursor stays visible
- * regardless of camera angle or where the cell sits on a tier.
+ * Both rings render with `depthTest = false`; halo renderOrder 99 draws
+ * first, the colored ring at 100 draws on top. Guarantees the cursor stays
+ * visible regardless of camera angle, ground tone, or sun position.
  */
 function createCursorMesh(): THREE.LineSegments<THREE.BufferGeometry, THREE.LineBasicMaterial> {
-  const half = 0.5;
-  // Four edges of the 1×1 quad as LINE_PAIR indices.
+  const lines = buildSquareLineSegments(0.5, CURSOR_VALID_COLOR, 0.95, 100);
+  lines.name = 'build-cursor';
+
+  const halo = buildSquareLineSegments(0.52, CURSOR_HALO_COLOR, 0.85, 99);
+  halo.name = 'build-cursor-halo';
+  halo.position.y = -0.01;
+  lines.add(halo);
+  return lines;
+}
+
+function buildSquareLineSegments(
+  half: number,
+  color: number,
+  opacity: number,
+  renderOrder: number,
+): THREE.LineSegments<THREE.BufferGeometry, THREE.LineBasicMaterial> {
   const positions = new Float32Array([
     -half, 0, -half,
     half, 0, -half,
@@ -259,14 +293,13 @@ function createCursorMesh(): THREE.LineSegments<THREE.BufferGeometry, THREE.Line
   geometry.setIndex(new THREE.BufferAttribute(indices, 1));
 
   const material = new THREE.LineBasicMaterial({
-    color: CURSOR_VALID_COLOR,
+    color,
     transparent: true,
-    opacity: 0.95,
+    opacity,
     depthTest: false,
   });
 
   const lines = new THREE.LineSegments(geometry, material);
-  lines.name = 'build-cursor';
-  lines.renderOrder = 100;
+  lines.renderOrder = renderOrder;
   return lines;
 }

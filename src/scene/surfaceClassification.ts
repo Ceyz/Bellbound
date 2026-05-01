@@ -56,6 +56,19 @@ const TERRAIN_HALF_DEPTH = ISLAND_TERRAIN_DEPTH / 2;
  * R grass, G sand, B dirt/riverbed, A cliff top. Riverbed remains a distinct
  * semantic `kind`, but currently shares the dirt splat channel until a second
  * splat texture is worth the extra shader cost.
+ *
+ * Analytical-vs-grid status of each input (carried-over debt, Step 10 polish):
+ *  - `cliffEdge`, `riverBank`  → grid-driven (4-neighbor lookups). ✓
+ *  - `inRiver`, `onCliff`      → grid-driven via `heightmap.ts` façade. ✓
+ *  - `isPath`                  → grid-driven via the path mask. ✓
+ *  - `isInIsland`, `shoreDistance`, `beachBlend` → still **analytical**
+ *    (`sampleIslandShape`). Acceptable for V1 because:
+ *      a) ocean editing is forbidden (D14), so the ocean shore never moves.
+ *      b) the coastal sand band is now protected from terraforming, so the
+ *         beach silhouette can't drift relative to the visible mesh.
+ *    Migrating to a fully grid-derived `shoreDistanceMap` is a Step 10 polish
+ *    item; until then, inland ponds intentionally don't get an ocean-style
+ *    foam/sand ring (they have their own `riverBank` band).
  */
 export function classifySurfaceAt(worldX: number, worldZ: number): SurfaceClassification {
   const shape = sampleIslandShape(worldX, worldZ);

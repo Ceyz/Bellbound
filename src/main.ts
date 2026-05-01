@@ -1,15 +1,22 @@
 import * as THREE from 'three';
 import './style.css';
-import { createIslandScene, rebuildTerrain, tickIslandScene, updateIslandRollingWorld } from './scene/createIslandScene';
+import { createIslandScene, rebuildTerrain, tickIslandScene, updateIslandRollingWorld, updatePathMaskCell } from './scene/createIslandScene';
 import { updatePlayerSurfaceDecals } from './scene/playerSurfaceDecals';
 import { rollingConfig, invalidateRollingCache } from './scene/rollingWorld';
 import {
   getPlayerStandingHeight,
-  pushPlayerOutOfRiver,
 } from './scene/heightmap';
-import { Surface, Tier, getTerrainGrid } from './scene/terrain/TerrainGrid';
+import { Surface, TERRAIN_ORIGIN, Tier, getTerrainGrid } from './scene/terrain/TerrainGrid';
+import { sampleIslandShape } from './scene/islandShape';
+import {
+  initTerraformFx,
+  spawnDustPuff,
+  spawnPathPop,
+  spawnSplash,
+  updateTerraformFx,
+} from './scene/terraformFx';
 import type { BuiltStructure } from './scene/terrain/builtStructure';
-import { BuildMode } from './buildMode/buildMode';
+import { BuildMode, type TerraformTool } from './buildMode/buildMode';
 import { mountBuildModeUI } from './buildMode/buildModeUI';
 import {
   ALL_ANIMATIONS,
@@ -67,6 +74,7 @@ renderer.shadowMap.enabled = true;
 renderer.shadowMap.type = THREE.PCFSoftShadowMap;
 
 const island = createIslandScene();
+initTerraformFx(island.scene);
 
 const params = {
   waveHeight: 0.18,
@@ -218,8 +226,8 @@ const terraformGrid = getTerrainGrid();
 let _savedRollingCurvature: number | null = null;
 let _savedCameraPitch: number | null = null;
 let _savedCameraDistance: number | null = null;
-const BUILD_MODE_CAMERA_PITCH = 1.20;     // ≈ 69° down — close to top-down without losing depth cues
-const BUILD_MODE_CAMERA_DISTANCE = 22;    // a bit farther so a wider area is visible
+const BUILD_MODE_CAMERA_PITCH = 1.50;     // ≈ 86° down — almost vertical so 1-cell gaps and holes between plateaus stay aimable
+const BUILD_MODE_CAMERA_DISTANCE = 26;    // farther so a wider area is visible at this steep angle
 buildMode.onChange((state) => {
   if (state.active && _savedRollingCurvature === null) {
     _savedRollingCurvature = rollingConfig.curvature;
@@ -240,29 +248,127 @@ buildMode.onChange((state) => {
   }
 });
 
-buildMode.registerTool({
+// Undo ring buffer (D15). Each terraforming stroke (one click, or a full
+// drag from pointerdown to pointerup) is captured as a list of `{cx, cz,
+// byteBefore}` snapshots. Ctrl+Z pops the most recent stroke, restores all
+// bytes verbatim, and rebuilds. Capped at 30 strokes so a long session
+// can't grow unbounded.
+const UNDO_CAPACITY = 30;
+type EditEntry = { cx: number; cz: number; byteBefore: number };
+type EditStroke = EditEntry[];
+const editHistory: EditStroke[] = [];
+let currentStroke: EditStroke | null = null;
+/**
+ * Wrap a TerraformTool so successful applies record a "before" snapshot into
+ * the active stroke. The snapshot is taken BEFORE delegating to the original
+ * apply so the byte read reflects the un-mutated state. Failed applies (tool
+ * returned an error) record nothing — undo only sees real edits.
+ */
+function trackUndo(tool: TerraformTool): TerraformTool {
+  const original = tool.apply;
+  return {
+    ...tool,
+    apply(cx, cz) {
+      const byteBefore = terraformGrid.getRawByte(cx, cz);
+      const err = original.call(tool, cx, cz);
+      if (err === null && currentStroke
+          && !currentStroke.some((e) => e.cx === cx && e.cz === cz)) {
+        currentStroke.push({ cx, cz, byteBefore });
+      }
+      return err;
+    },
+  };
+}
+function commitStroke(): void {
+  if (!currentStroke) return;
+  if (currentStroke.length > 0) {
+    editHistory.push(currentStroke);
+    if (editHistory.length > UNDO_CAPACITY) editHistory.shift();
+  }
+  currentStroke = null;
+}
+function undoLastStroke(): void {
+  const stroke = editHistory.pop();
+  if (!stroke || stroke.length === 0) return;
+  // Restore in reverse order so the LIFO read on the dirty queue still picks
+  // the most recently touched cells last.
+  for (let i = stroke.length - 1; i >= 0; i--) {
+    terraformGrid.setRawByte(stroke[i].cx, stroke[i].cz, stroke[i].byteBefore);
+  }
+  rebuildTerrain(island);
+}
+
+// AC-style restriction: sand (the coastal beach band) cannot be terraformed —
+// no cliffs raised on it, no water dug into it. Threshold 0.4 mirrors the
+// `surfaceClassification.ts` "fully sand" cutoff so the visible sand zone and
+// the gameplay restriction agree. Once a cell is at T1+ it's a cliff plateau,
+// no longer "sandy" semantically, so further raises stay legal.
+const BEACH_TERRAFORM_THRESHOLD = 0.4;
+function isBeachCell(cx: number, cz: number): boolean {
+  const wx = TERRAIN_ORIGIN.x + (cx + 0.5);
+  const wz = TERRAIN_ORIGIN.z + (cz + 0.5);
+  return sampleIslandShape(wx, wz).beachT >= BEACH_TERRAFORM_THRESHOLD;
+}
+/**
+ * True if the player's collision circle would overlap the cell's 1×1
+ * footprint. Used to refuse cliff edits on cells the player stands on
+ * AND on cells *adjacent* to the player — the freshly-built cliff wall
+ * otherwise passes through the player's body when they're standing right
+ * against the edge.
+ *
+ * Computed as the squared distance from the player's center to the closest
+ * point on the cell's AABB; if it's ≤ collision radius squared, the wall
+ * would clip into the player and we refuse the edit.
+ */
+const PLAYER_CLIFF_MARGIN = 0.05; // small extra slack so flush against the wall is still refused
+function playerOverlapsCell(cx: number, cz: number): boolean {
+  const p = island.player.position;
+  const minX = TERRAIN_ORIGIN.x + cx;
+  const maxX = minX + 1;
+  const minZ = TERRAIN_ORIGIN.z + cz;
+  const maxZ = minZ + 1;
+  const closestX = Math.max(minX, Math.min(p.x, maxX));
+  const closestZ = Math.max(minZ, Math.min(p.z, maxZ));
+  const dx = p.x - closestX;
+  const dz = p.z - closestZ;
+  const r = PLAYER_COLLISION_RADIUS + PLAYER_CLIFF_MARGIN;
+  return dx * dx + dz * dz < r * r;
+}
+
+buildMode.registerTool(trackUndo({
   kind: 'cliff_raise',
   label: 'Élever falaise',
   canApply: (cx, cz) => {
     if (!terraformGrid.cellInBounds(cx, cz)) return false;
     if (terraformGrid.getSurface(cx, cz) !== Surface.LAND) return false;
-    return terraformGrid.getTier(cx, cz) < Tier.T3;
+    if (terraformGrid.getTier(cx, cz) >= Tier.T3) return false;
+    // Stricter than just the player's cell: any cell whose footprint
+    // overlaps the player's collision circle is refused, so a cliff wall
+    // raised flush against them never clips into their body.
+    if (playerOverlapsCell(cx, cz)) return false;
+    if (terraformGrid.getTier(cx, cz) === Tier.T0 && isBeachCell(cx, cz)) return false;
+    return true;
   },
   apply: (cx, cz) => {
     const err = terraformGrid.raiseCell(cx, cz);
     if (err) return err.reason;
     rebuildTerrain(island);
+    spawnFxAtCell(cx, cz, 'cliff');
     return null;
   },
-});
+}));
 
-buildMode.registerTool({
+buildMode.registerTool(trackUndo({
   kind: 'cliff_lower',
   label: 'Abaisser falaise',
   canApply: (cx, cz) => {
     if (!terraformGrid.cellInBounds(cx, cz)) return false;
     if (terraformGrid.getSurface(cx, cz) !== Surface.LAND) return false;
     if (terraformGrid.getTier(cx, cz) <= Tier.T0) return false;
+    // Same overlap rule as cliff_raise — lowering a cell adjacent to the
+    // player drops the wall they're leaning against and re-snaps their
+    // standing height a frame later, easy to mis-read as a teleport.
+    if (playerOverlapsCell(cx, cz)) return false;
     // No 4-neighbor at strictly higher tier (cantilever rule).
     const t = terraformGrid.getTier(cx, cz);
     for (const [dx, dz] of [[1, 0], [-1, 0], [0, 1], [0, -1]] as const) {
@@ -275,34 +381,37 @@ buildMode.registerTool({
     const err = terraformGrid.lowerCell(cx, cz);
     if (err) return err.reason;
     rebuildTerrain(island);
+    spawnFxAtCell(cx, cz, 'cliff');
     return null;
   },
-});
+}));
 
-buildMode.registerTool({
+buildMode.registerTool(trackUndo({
   kind: 'water_dig',
   label: 'Creuser eau',
   canApply: (cx, cz) => {
     if (!terraformGrid.cellInBounds(cx, cz)) return false;
-    if (terraformGrid.getSurface(cx, cz) !== Surface.LAND) return false;
-    // No 4-neighbor at strictly higher tier (cliff foot rule).
-    const t = terraformGrid.getTier(cx, cz);
-    for (const [dx, dz] of [[1, 0], [-1, 0], [0, 1], [0, -1]] as const) {
-      if (!terraformGrid.cellInBounds(cx + dx, cz + dz)) continue;
-      if (terraformGrid.getSurface(cx + dx, cz + dz) === Surface.LAND
-        && terraformGrid.getTier(cx + dx, cz + dz) > t) return false;
-    }
+    // Permissive: LAND will dig, FRESHWATER is a silent no-op (already water).
+    // This keeps the cursor green during a drag stroke even after each cell
+    // turns FRESHWATER — the natural read for "the brush passes over the
+    // tile it just affected" is "still valid", not "now refused".
+    const s = terraformGrid.getSurface(cx, cz);
+    if (s !== Surface.LAND && s !== Surface.FRESHWATER) return false;
+    // No water on the coastal sand band (would erode the silhouette).
+    if (s === Surface.LAND && isBeachCell(cx, cz)) return false;
     return true;
   },
   apply: (cx, cz) => {
+    if (terraformGrid.getSurface(cx, cz) === Surface.FRESHWATER) return null; // no-op, cursor stays green
     const err = terraformGrid.digFreshwater(cx, cz);
     if (err) return err.reason;
     rebuildTerrain(island);
+    spawnFxAtCell(cx, cz, 'water');
     return null;
   },
-});
+}));
 
-buildMode.registerTool({
+buildMode.registerTool(trackUndo({
   kind: 'water_fill',
   label: 'Boucher eau',
   canApply: (cx, cz) => {
@@ -313,14 +422,95 @@ buildMode.registerTool({
     const err = terraformGrid.fillFreshwater(cx, cz);
     if (err) return err.reason;
     rebuildTerrain(island);
+    spawnFxAtCell(cx, cz, 'water');
     return null;
   },
-});
+}));
+
+// Path tools (Step 7). 4-style MVP: dirt / stone / brick / planks. Each tool
+// is a thin wrapper around `paintPath` with a different style index — the
+// `terrainSplatMaterial` fragment shader looks up the style from the path
+// byte and re-tints the dirt sample accordingly (no per-style texture).
+//
+// Path edits go through `updatePathMaskCell` instead of `rebuildTerrain`:
+// only the 94×78 R8 path mask changes — geometry, surface maps, waterfalls,
+// cliff sides are all unaffected. Drag-paint stays smooth (one texSubImage
+// upload per cell vs. a full surface-map bake + multi-mesh rebuild).
+const PATH_STYLES = [
+  { kind: 'path_paint_dirt',   label: 'Chemin terre',  style: 1, tint: 0xa87a4f },
+  { kind: 'path_paint_stone',  label: 'Chemin pierre', style: 2, tint: 0x9e9e9e },
+  { kind: 'path_paint_brick',  label: 'Chemin brique', style: 3, tint: 0xc64d3a },
+  { kind: 'path_paint_planks', label: 'Chemin bois',   style: 4, tint: 0xc89150 },
+] as const;
+for (const { kind, label, style, tint } of PATH_STYLES) {
+  buildMode.registerTool(trackUndo({
+    kind,
+    label,
+    canApply: (cx, cz) => {
+      if (!terraformGrid.cellInBounds(cx, cz)) return false;
+      if (terraformGrid.getSurface(cx, cz) !== Surface.LAND) return false;
+      // Skip cells already painted with this exact style — keeps the cursor
+      // green during drag (the apply is a no-op) but prevents a useless
+      // re-write churning the path mask.
+      return terraformGrid.getCell(cx, cz).path !== style;
+    },
+    apply: (cx, cz) => {
+      const err = terraformGrid.paintPath(cx, cz, style);
+      if (err) return err.reason;
+      updatePathMaskCell(island, cx, cz);
+      spawnFxAtCell(cx, cz, 'path', tint);
+      return null;
+    },
+  }));
+}
+
+buildMode.registerTool(trackUndo({
+  kind: 'path_erase',
+  label: 'Effacer chemin',
+  canApply: (cx, cz) => {
+    if (!terraformGrid.cellInBounds(cx, cz)) return false;
+    if (terraformGrid.getSurface(cx, cz) !== Surface.LAND) return false;
+    return terraformGrid.getCell(cx, cz).path !== 0;
+  },
+  apply: (cx, cz) => {
+    const err = terraformGrid.erasePath(cx, cz);
+    if (err) return err.reason;
+    updatePathMaskCell(island, cx, cz);
+    spawnFxAtCell(cx, cz, 'path', 0xd4b08a);
+    return null;
+  },
+}));
+
+/**
+ * Spawn the post-edit visual feedback at the cell's current top. Called
+ * AFTER the grid has been mutated so the dust/splash sits on top of the new
+ * surface (a freshly-raised tier, a freshly-dug pond's water plane, etc.).
+ */
+function spawnFxAtCell(cx: number, cz: number, kind: 'cliff' | 'water' | 'path', tint?: number): void {
+  if (!terraformGrid.cellInBounds(cx, cz)) return;
+  const wx = TERRAIN_ORIGIN.x + (cx + 0.5);
+  const wz = TERRAIN_ORIGIN.z + (cz + 0.5);
+  const y = terraformGrid.cellHeight(cx, cz);
+  if (kind === 'cliff') spawnDustPuff(wx, y, wz);
+  else if (kind === 'water') spawnSplash(wx, y, wz);
+  else spawnPathPop(wx, y, wz, tint);
+}
 
 window.addEventListener('keydown', (event) => {
   if (event.code === 'Escape' && buildMode.isActive()) {
     buildMode.exit();
     event.preventDefault();
+    return;
+  }
+
+  // Ctrl+Z (Cmd+Z on macOS) — undo last terraforming stroke. Only handled
+  // while build mode is active so the shortcut doesn't interfere with
+  // browser/system text fields or the dev console.
+  if (event.code === 'KeyZ' && (event.ctrlKey || event.metaKey) && !event.shiftKey) {
+    if (buildMode.isActive()) {
+      undoLastStroke();
+      event.preventDefault();
+    }
     return;
   }
 
@@ -346,21 +536,50 @@ sceneCanvas.addEventListener('pointerdown', () => {
   footstepAudio.unlock();
 });
 
-// Track pointer unconditionally so the cursor mesh is positioned the moment
-// the user enters a tool, even if they haven't moved the mouse since the
-// page loaded (otherwise tryPlace would silently no-op on the first click).
+// Drag-to-paint: pointerdown starts a paint stroke, pointermove applies the
+// tool on each NEW cell the cursor crosses (dedupe by cell so we don't run a
+// full rebuild on every frame), pointerup ends the stroke. Useful for paths
+// and water carving where one-cell-at-a-time clicks were tedious. Cliff
+// raise/lower also benefits — drag along a ridge to raise it.
+let isPainting = false;
+let lastPaintedCell: [number, number] | null = null;
+
 sceneCanvas.addEventListener('pointermove', (event) => {
   buildMode.setPointer(event.clientX, event.clientY, sceneCanvas);
+  if (!isPainting || !buildMode.isActive()) return;
+  buildMode.update(island.camera);
+  const cell = buildMode.getCursorCell();
+  if (!cell) return;
+  if (lastPaintedCell && cell[0] === lastPaintedCell[0] && cell[1] === lastPaintedCell[1]) return;
+  if (buildMode.tryPlace()) {
+    lastPaintedCell = [cell[0], cell[1]];
+  }
 });
-sceneCanvas.addEventListener('click', (event) => {
+sceneCanvas.addEventListener('pointerdown', (event) => {
   if (!buildMode.isActive()) return;
-  // The click event also carries a position. Snap the cursor to it before
-  // applying so the user can click anywhere on the canvas without first
-  // dragging the mouse to wake up pointermove.
+  if (event.button !== 0) return; // left-click only
+  isPainting = true;
+  lastPaintedCell = null;
+  // Open a new undo stroke before any tool runs so trackUndo() captures
+  // every successful apply during this pointerdown→pointerup span.
+  currentStroke = [];
   buildMode.setPointer(event.clientX, event.clientY, sceneCanvas);
   buildMode.update(island.camera);
-  buildMode.tryPlace();
+  if (buildMode.tryPlace()) {
+    const cell = buildMode.getCursorCell();
+    if (cell) lastPaintedCell = [cell[0], cell[1]];
+  }
   event.preventDefault();
+});
+sceneCanvas.addEventListener('pointerup', () => {
+  isPainting = false;
+  lastPaintedCell = null;
+  commitStroke();
+});
+sceneCanvas.addEventListener('pointerleave', () => {
+  isPainting = false;
+  lastPaintedCell = null;
+  commitStroke();
 });
 
 sceneCanvas.addEventListener('contextmenu', (event) => event.preventDefault());
@@ -438,12 +657,34 @@ renderer.setAnimationLoop(() => {
     [-d, -d],
   ];
   const [prevCx, prevCz] = terrainGrid.worldToCell(prevX, prevZ);
+  // MVP movement policy: spec-compliant `isTraversable` blocks every LAND →
+  // FRESHWATER transition without a bridge structure, but bridges don't ship
+  // until Step 9. Without a relaxation here the player can soft-lock by
+  // terraforming water around themselves. We allow wading: target FRESHWATER
+  // counts as LAND for traversal purposes. Once Step 9 brings real bridges,
+  // this wrapper goes away and `isTraversable(...)` is called directly again.
+  const playerCanTraverse = (toCx: number, toCz: number): boolean => {
+    if (prevCx === toCx && prevCz === toCz) return true;
+    const dx = Math.abs(toCx - prevCx);
+    const dz = Math.abs(toCz - prevCz);
+    if (dx > 1 || dz > 1) return false;
+    if (!terrainGrid.cellInBounds(toCx, toCz)) return false;
+    const toSurface = terrainGrid.getSurface(toCx, toCz);
+    if (toSurface === Surface.VOID || toSurface === Surface.OCEAN) return false;
+    // FRESHWATER: allow wading (MVP relaxation).
+    if (toSurface === Surface.FRESHWATER) return true;
+    if (terrainGrid.getSurface(prevCx, prevCz) === Surface.FRESHWATER) return true;
+    const fromTier = terrainGrid.getTier(prevCx, prevCz);
+    const toTier = terrainGrid.getTier(toCx, toCz);
+    if (fromTier === toTier) return true;
+    // Different-tier LAND still requires a staircase/incline structure.
+    void builtStructures;
+    return false;
+  };
   const isBlockedAt = (x: number, z: number): boolean => {
     for (const [dx, dz] of bodyProbes) {
       const [probeCx, probeCz] = terrainGrid.worldToCell(x + dx, z + dz);
-      if (!terrainGrid.isTraversable(prevCx, prevCz, probeCx, probeCz, builtStructures)) {
-        return true;
-      }
+      if (!playerCanTraverse(probeCx, probeCz)) return true;
     }
     return false;
   };
@@ -459,7 +700,13 @@ renderer.setAnimationLoop(() => {
   resolveCircleObstacles(island.player.position, island.obstacles);
   clampPlayerToGround(island.player.position);
 
-  pushPlayerOutOfRiver(island.player.position);
+  // pushPlayerOutOfRiver is intentionally NOT called: it expels the player
+  // toward the analytical riverCenterZ(x), which teleports them across the
+  // map when a player-dug pond exists outside the original river curve. With
+  // the MVP wading relaxation in `playerCanTraverse`, the player can walk
+  // through water freely, so expelling them is unnecessary and broken. Step 9
+  // (bridges) restores strict water blocking + a grid-aware push.
+  // pushPlayerOutOfRiver(island.player.position);
 
   const targetY = getPlayerStandingHeight(
     island.player.position.x,
@@ -521,6 +768,7 @@ renderer.setAnimationLoop(() => {
 
   updateIslandRollingWorld(island);
   buildMode.update(island.camera);
+  updateTerraformFx(elapsed);
   renderer.render(island.scene, island.camera);
 });
 

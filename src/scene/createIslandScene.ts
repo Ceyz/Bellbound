@@ -12,7 +12,7 @@ import {
   type RollingObject,
 } from './rollingWorld';
 import { createSurfaceMaps, type SurfaceMaps } from './surfaceMaps';
-import { getTerrainGrid } from './terrain/TerrainGrid';
+import { GRID_W, getTerrainGrid } from './terrain/TerrainGrid';
 import { buildGroundMesh } from './terrain/groundMeshBuilder';
 import { buildFreshwaterMesh } from './terrain/freshwaterMeshBuilder';
 import {
@@ -305,6 +305,7 @@ export function rebuildTerrain(island: IslandScene): void {
     groundUniforms.uCliffEdgeMap.value = newMaps.cliffEdgeMap;
     groundUniforms.uShoreMask.value = newMaps.shoreMask;
     groundUniforms.uShoreDistanceMap.value = newMaps.shoreDistanceMap;
+    groundUniforms.uPathMask.value = newMaps.pathMask;
   }
   const waterUniforms = island.water.material.userData.waterUniforms as
     | Record<string, THREE.IUniform> | undefined;
@@ -322,6 +323,7 @@ export function rebuildTerrain(island: IslandScene): void {
   oldMaps.shoreDistanceMap.dispose();
   oldMaps.riverMask.dispose();
   oldMaps.oceanShoreMask.dispose();
+  oldMaps.pathMask.dispose();
   island.surfaceMaps = newMaps;
 
   // 4. Rebuild ground + freshwater geometries in place (keep mesh refs and
@@ -373,6 +375,27 @@ export function rebuildTerrain(island: IslandScene): void {
   disableFrustumCullingRecursive(island.cliffSideWalls);
 
   // 7. Drain dirty rects from the grid so the next edit starts clean.
+  grid.consumeDirtyRegions();
+}
+
+/**
+ * Cheap partial update for path edits: rewrites one byte of the path-mask
+ * texture and re-uploads. Avoids re-baking the 512² surface maps and
+ * rebuilding ground/freshwater/waterfall/cliff geometry — none of which
+ * change when only a path tile is painted or erased.
+ *
+ * Drag-paint strokes call this per cell instead of `rebuildTerrain`; what
+ * was a multi-tens-of-ms hitch per tile becomes a single texSubImage upload.
+ */
+export function updatePathMaskCell(island: IslandScene, cx: number, cz: number): void {
+  const grid = getTerrainGrid();
+  if (!grid.cellInBounds(cx, cz)) return;
+  const tex = island.surfaceMaps.pathMask;
+  const data = tex.image.data as Uint8Array;
+  data[cz * GRID_W + cx] = grid.getCell(cx, cz).path & 0x0F;
+  tex.needsUpdate = true;
+  // Drain only the path entry from the dirty rect tracker so a subsequent
+  // geometry-changing edit doesn't see this cell as still pending.
   grid.consumeDirtyRegions();
 }
 
