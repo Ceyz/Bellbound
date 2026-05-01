@@ -68,6 +68,14 @@ declare global {
   }
 }
 
+// Wrapped in `async function main()` so the `await bootTerrain(...)` below is a
+// regular await, not a top-level await. Vite's default esbuild build target
+// (es2020 / chrome87 / safari14) does not support TLA — production build fails
+// otherwise. Body kept at column 0 to minimise the diff against the previous
+// module-level layout; semantically the whole imperative entrypoint just runs
+// inside one async function now.
+async function main(): Promise<void> {
+
 const canvas = document.querySelector<HTMLCanvasElement>('#scene');
 
 if (!canvas) {
@@ -882,3 +890,9 @@ function dampAngle(current: number, next: number, lambda: number, delta: number)
   const diff = Math.atan2(Math.sin(next - current), Math.cos(next - current));
   return current + diff * (1 - Math.exp(-lambda * delta));
 }
+
+} // end async function main()
+
+void main().catch((err) => {
+  console.error('[bellbound] fatal boot error:', err);
+});
