@@ -7,6 +7,7 @@ import {
   getPlayerStandingHeight,
 } from './scene/heightmap';
 import { Surface, TERRAIN_ORIGIN, Tier, getTerrainGrid } from './scene/terrain/TerrainGrid';
+import { bootTerrain, type IslandMintTerrainFields } from './scene/terrain/terrainSave';
 import { sampleIslandShape } from './scene/islandShape';
 import {
   initTerraformFx,
@@ -51,6 +52,19 @@ declare global {
       getRollingCurvature: () => number;
       getCursorState: () => null | { visible: boolean; position: [number, number, number] };
     };
+    /**
+     * Dev hook: pre-mounted `island_save.state.terrain` payload to load at boot.
+     * Set by tooling / E2E tests / dev console; read by `bootTerrain` before
+     * the scene mounts. Production reads the same shape from the inscription
+     * fetch path (Phase A). Never set in production builds.
+     */
+    __BELLBOUND_SAVE__?: { state?: { terrain?: unknown } };
+    /**
+     * Dev hook: pre-mounted `island_mint.initial_state` terrain block. When
+     * present, `bootTerrain` validates `terrain_base_grid_hash` and refuses
+     * the save on silent-drift mismatch (spec §3.5).
+     */
+    __BELLBOUND_MINT__?: { initial_state?: IslandMintTerrainFields };
   }
 }
 
@@ -72,6 +86,21 @@ const renderer = new THREE.WebGLRenderer({
 renderer.outputColorSpace = THREE.SRGBColorSpace;
 renderer.shadowMap.enabled = true;
 renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+
+// Boot the terrain singleton BEFORE the scene reads it. Dev hooks supply a
+// pre-mounted save / mint pair; production wires the same fields from the
+// inscription fetch (Phase A). With neither hook set, `bootTerrain` ends up
+// at the analytical-bake fallback path — same outcome as the previous lazy
+// `getTerrainGrid()` first read, just with deterministic boot timing.
+const __saveTerrain = window.__BELLBOUND_SAVE__?.state?.terrain;
+const __mintFields = window.__BELLBOUND_MINT__?.initial_state;
+const __bootResult = await bootTerrain({ save: __saveTerrain, mint: __mintFields });
+if (__bootResult.fatalMintErrors.length > 0) {
+  console.error('[bellbound] island mint terrain metadata invalid:', __bootResult.fatalMintErrors);
+}
+if (__bootResult.errors.length > 0) {
+  console.warn('[bellbound] terrain save load errors:', __bootResult.errors);
+}
 
 const island = createIslandScene();
 initTerraformFx(island.scene);

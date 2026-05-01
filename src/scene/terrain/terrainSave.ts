@@ -144,12 +144,12 @@ export async function deserializeTerrain(
 
 /**
  * Deserialize and install the save's terrain grid as the active singleton.
- * This is the boot-time entry point: callers (main.ts boot) should try this
- * with `island_save.state.terrain` first; if the result has errors, they fall
- * back to the analytical bake (which `getTerrainGrid()` produces lazily).
+ * Convenience for one-shot loads (tests, dev tools) where the caller does
+ * NOT want mint validation or fallback reconstruction.
  *
- * Returns the same `TerrainLoadResult` as `deserializeTerrain` so callers can
- * surface errors. The singleton is only mutated on success.
+ * The singleton is only mutated on success. Production boot should use
+ * `bootTerrain()` instead so that `terrain_base_grid_hash` is verified and
+ * a valid grid is always produced.
  */
 export async function applyTerrainSave(
   payload: unknown,
@@ -159,6 +159,148 @@ export async function applyTerrainSave(
     replaceTerrainGrid(result.grid);
   }
   return result;
+}
+
+// ─── Boot orchestration ────────────────────────────────────────────────
+
+export interface BootTerrainOptions {
+  /** Raw `island_save.state.terrain` (or `undefined` if no save). */
+  save?: unknown;
+  /** `island_mint.initial_state` terrain block (or `undefined` if unknown). */
+  mint?: IslandMintTerrainFields;
+}
+
+export interface BootTerrainResult {
+  grid: TerrainGrid;
+  /**
+   * Where the grid came from:
+   *   - `save`      → loaded from `opts.save` (mint validated if provided)
+   *   - `mint-base` → reconstructed from `opts.mint.terrain_seed` + version
+   *   - `fallback`  → analytical bake (no mint, OR mint validation failed)
+   */
+  source: 'save' | 'mint-base' | 'fallback';
+  /** Non-fatal save-load errors. May coexist with `source != 'save'`. */
+  errors: string[];
+  /**
+   * Mint metadata mismatches (geometric constants or `terrain_base_grid_hash`
+   * drift). When non-empty, the save was NOT loaded — the silent-drift
+   * detector demands rejection per spec §3.5. Callers may choose to refuse
+   * booting entirely; this orchestrator falls back to the analytical bake
+   * so the scene still has a valid grid for diagnostics.
+   */
+  fatalMintErrors: string[];
+}
+
+/**
+ * Boot the terrain grid from optional save + mint metadata. Always produces
+ * a valid grid in the singleton — even on mismatched mint or invalid save —
+ * so the scene never starts with an uninitialised grid.
+ *
+ * Order of operations:
+ *
+ *   1. If `mint` is provided, validate its geometric constants (grid_w/d,
+ *      cell_size, tier_height, origin) and verify `terrain_base_grid_hash`
+ *      by re-baking the base grid locally. A mismatch is **fatal** for the
+ *      save path: we ignore `opts.save` and fall through to the analytical
+ *      bake, while reporting the issue via `fatalMintErrors` so the caller
+ *      can decide whether to surface it to the user.
+ *
+ *   2. If `save` is provided and the mint check passed (or no mint), try
+ *      `deserializeTerrain` and install the grid. On failure, push errors
+ *      to `errors` and fall through to step 3.
+ *
+ *   3. With no save (or save failed), reconstruct the base from `mint`'s
+ *      seed + version when available, else lazy-bake (`bakeFromAnalytical`).
+ */
+export async function bootTerrain(
+  opts: BootTerrainOptions = {},
+): Promise<BootTerrainResult> {
+  const errors: string[] = [];
+  const fatalMintErrors: string[] = [];
+
+  if (opts.mint) {
+    const mintErrors = await validateMintMetadata(opts.mint);
+    if (mintErrors.length > 0) {
+      fatalMintErrors.push(...mintErrors);
+      const grid = TerrainGrid.bakeFromAnalytical();
+      replaceTerrainGrid(grid);
+      return { grid, source: 'fallback', errors, fatalMintErrors };
+    }
+  }
+
+  if (opts.save !== undefined && opts.save !== null) {
+    const result = await deserializeTerrain(opts.save);
+    if (result.grid) {
+      replaceTerrainGrid(result.grid);
+      return { grid: result.grid, source: 'save', errors, fatalMintErrors };
+    }
+    errors.push(...result.errors);
+  }
+
+  if (opts.mint) {
+    const base = bakeBase(opts.mint);
+    replaceTerrainGrid(base);
+    return { grid: base, source: 'mint-base', errors, fatalMintErrors };
+  }
+
+  const grid = TerrainGrid.bakeFromAnalytical();
+  replaceTerrainGrid(grid);
+  return { grid, source: 'fallback', errors, fatalMintErrors };
+}
+
+/**
+ * Validate mint terrain metadata against this client's geometric constants
+ * and recompute the base-grid hash. Returns an array of human-readable
+ * mismatch reasons; empty iff the mint is consistent with this client.
+ *
+ * The hash check is the silent-drift detector spec'd in §3.5: if a future
+ * generator change produces different bytes for the same seed, every old
+ * mint's hash will diverge from the new bake and saves anchored to that mint
+ * become rejectable until the generator version is bumped accordingly.
+ */
+export async function validateMintMetadata(
+  mint: IslandMintTerrainFields,
+): Promise<string[]> {
+  const errors: string[] = [];
+  if (mint.grid_w !== GRID_W) errors.push(`grid_w mismatch: mint ${mint.grid_w} vs client ${GRID_W}`);
+  if (mint.grid_d !== GRID_D) errors.push(`grid_d mismatch: mint ${mint.grid_d} vs client ${GRID_D}`);
+  if (mint.cell_size !== CELL) errors.push(`cell_size mismatch: mint ${mint.cell_size} vs client ${CELL}`);
+  if (mint.tier_height !== TIER_HEIGHT_METERS) errors.push(`tier_height mismatch: mint ${mint.tier_height} vs client ${TIER_HEIGHT_METERS}`);
+  if (mint.origin_x !== TERRAIN_ORIGIN.x) errors.push(`origin_x mismatch: mint ${mint.origin_x} vs client ${TERRAIN_ORIGIN.x}`);
+  if (mint.origin_z !== TERRAIN_ORIGIN.z) errors.push(`origin_z mismatch: mint ${mint.origin_z} vs client ${TERRAIN_ORIGIN.z}`);
+  if (mint.terrain_base_shape_version !== TERRAIN_BASE_SHAPE_VERSION) {
+    errors.push(
+      `unsupported terrain_base_shape_version: mint ${mint.terrain_base_shape_version}, client supports ${TERRAIN_BASE_SHAPE_VERSION}`,
+    );
+  }
+  // Bail before the hash check on geometric mismatch — `bakeBase` would still
+  // produce a 94×78 grid, so its hash would never match a mint declaring
+  // different dims; reporting both mismatches is just noise.
+  if (errors.length > 0) return errors;
+
+  const base = bakeBase(mint);
+  const localHash = await base.computeBaseGridHash();
+  if (localHash !== mint.terrain_base_grid_hash) {
+    errors.push(
+      `terrain_base_grid_hash mismatch: mint declares ${mint.terrain_base_grid_hash}, local bake produced ${localHash}`,
+    );
+  }
+  return errors;
+}
+
+/**
+ * Re-bake the base grid for the seed + version declared in `mint`. The v1
+ * bake is parameter-free (`bakeFromAnalytical`); future generator versions
+ * will dispatch on `(terrain_seed, terrain_base_shape_version)`. Throws if
+ * the version isn't recognised — callers must validate first.
+ */
+function bakeBase(mint: IslandMintTerrainFields): TerrainGrid {
+  if (mint.terrain_base_shape_version !== TERRAIN_BASE_SHAPE_VERSION) {
+    throw new Error(
+      `bakeBase: unsupported terrain_base_shape_version ${mint.terrain_base_shape_version}`,
+    );
+  }
+  return TerrainGrid.bakeFromAnalytical();
 }
 
 // ─── Mint metadata ─────────────────────────────────────────────────────

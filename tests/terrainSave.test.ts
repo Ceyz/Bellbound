@@ -14,9 +14,12 @@ import {
   TERRAIN_BASE_SHAPE_VERSION,
   TERRAIN_SAVE_VERSION,
   applyTerrainSave,
+  bootTerrain,
   buildIslandMintTerrainFields,
   deserializeTerrain,
   serializeTerrain,
+  validateMintMetadata,
+  type IslandMintTerrainFields,
 } from '../src/scene/terrain/terrainSave';
 
 afterEach(() => {
@@ -204,6 +207,136 @@ describe('terrainSave — buildIslandMintTerrainFields', () => {
     const grid = TerrainGrid.bakeFromAnalytical();
     const fields = await buildIslandMintTerrainFields(grid);
     expect(fields.terrain_base_grid_hash).toBe(await grid.computeBaseGridHash());
+  });
+});
+
+describe('terrainSave — validateMintMetadata', () => {
+  it('returns no errors for a fresh self-bake', async () => {
+    const fields = await buildIslandMintTerrainFields(TerrainGrid.bakeFromAnalytical());
+    expect(await validateMintMetadata(fields)).toEqual([]);
+  });
+
+  it('reports geometric mismatches', async () => {
+    const fields = await buildIslandMintTerrainFields(TerrainGrid.bakeFromAnalytical());
+    expect(await validateMintMetadata({ ...fields, grid_w: 100 }))
+      .toEqual([expect.stringMatching(/grid_w mismatch/)]);
+    expect(await validateMintMetadata({ ...fields, cell_size: 2 }))
+      .toEqual([expect.stringMatching(/cell_size mismatch/)]);
+    expect(await validateMintMetadata({ ...fields, tier_height: 3 }))
+      .toEqual([expect.stringMatching(/tier_height mismatch/)]);
+    expect(await validateMintMetadata({ ...fields, terrain_base_shape_version: 2 }))
+      .toEqual([expect.stringMatching(/unsupported terrain_base_shape_version/)]);
+  });
+
+  it('detects silent drift via terrain_base_grid_hash mismatch', async () => {
+    const fields = await buildIslandMintTerrainFields(TerrainGrid.bakeFromAnalytical());
+    const errors = await validateMintMetadata({
+      ...fields,
+      terrain_base_grid_hash: 'a'.repeat(64),
+    });
+    expect(errors).toEqual([expect.stringMatching(/terrain_base_grid_hash mismatch/)]);
+  });
+});
+
+describe('terrainSave — bootTerrain', () => {
+  it('with no opts: lazy bake fallback, mutates singleton, no errors', async () => {
+    setTerrainGridForTesting(null);
+    const result = await bootTerrain();
+    expect(result.source).toBe('fallback');
+    expect(result.errors).toEqual([]);
+    expect(result.fatalMintErrors).toEqual([]);
+    expect(result.grid.serialize()).toEqual(getTerrainGrid().serialize());
+  });
+
+  it('with valid mint only: rebuilds base from mint, source=mint-base', async () => {
+    const baseGrid = TerrainGrid.bakeFromAnalytical();
+    const fields = await buildIslandMintTerrainFields(baseGrid);
+    setTerrainGridForTesting(null);
+
+    const result = await bootTerrain({ mint: fields });
+    expect(result.source).toBe('mint-base');
+    expect(result.fatalMintErrors).toEqual([]);
+    expect(result.grid.serialize()).toEqual(baseGrid.serialize());
+  });
+
+  it('with valid save + valid mint: loads save, source=save', async () => {
+    const baseGrid = TerrainGrid.bakeFromAnalytical();
+    const fields = await buildIslandMintTerrainFields(baseGrid);
+
+    // Build a custom edited grid distinguishable from the base.
+    const edited = new TerrainGrid();
+    edited.setRawByte(5, 5, (Surface.LAND << 6) | (Tier.T2 << 4) | 7);
+    const save = await serializeTerrain(edited);
+
+    const result = await bootTerrain({ save, mint: fields });
+    expect(result.source).toBe('save');
+    expect(result.fatalMintErrors).toEqual([]);
+    expect(result.grid.getCell(5, 5)).toEqual({
+      surface: Surface.LAND,
+      tier: Tier.T2,
+      path: 7,
+    });
+  });
+
+  it('with hash drift: rejects save, falls back, fatalMintErrors populated', async () => {
+    const baseGrid = TerrainGrid.bakeFromAnalytical();
+    const fields = await buildIslandMintTerrainFields(baseGrid);
+    const driftedFields: IslandMintTerrainFields = {
+      ...fields,
+      terrain_base_grid_hash: 'a'.repeat(64),
+    };
+
+    // A save that WOULD load successfully if mint check were bypassed.
+    const edited = new TerrainGrid();
+    edited.setRawByte(0, 0, (Surface.LAND << 6) | (Tier.T1 << 4));
+    const save = await serializeTerrain(edited);
+
+    const result = await bootTerrain({ save, mint: driftedFields });
+    expect(result.source).toBe('fallback');
+    expect(result.fatalMintErrors).toEqual([expect.stringMatching(/terrain_base_grid_hash mismatch/)]);
+    // Save was ignored — the grid is the analytical fallback, not the edited save.
+    expect(result.grid.serialize()).toEqual(baseGrid.serialize());
+  });
+
+  it('with geometric mismatch: rejects save, falls back', async () => {
+    const fields = await buildIslandMintTerrainFields(TerrainGrid.bakeFromAnalytical());
+    const result = await bootTerrain({
+      mint: { ...fields, grid_w: 200 },
+    });
+    expect(result.source).toBe('fallback');
+    expect(result.fatalMintErrors[0]).toMatch(/grid_w mismatch/);
+  });
+
+  it('with valid mint + invalid save: falls through to mint-base, save errors reported', async () => {
+    const fields = await buildIslandMintTerrainFields(TerrainGrid.bakeFromAnalytical());
+    const result = await bootTerrain({
+      save: { version: 999, data_b64: 'x' },
+      mint: fields,
+    });
+    expect(result.source).toBe('mint-base');
+    expect(result.fatalMintErrors).toEqual([]);
+    expect(result.errors[0]).toMatch(/unsupported terrain version/);
+  });
+
+  it('with no mint + invalid save: falls through to lazy bake fallback, save errors reported', async () => {
+    setTerrainGridForTesting(null);
+    const result = await bootTerrain({ save: { version: 42, data_b64: 'q' } });
+    expect(result.source).toBe('fallback');
+    expect(result.fatalMintErrors).toEqual([]);
+    expect(result.errors.length).toBeGreaterThan(0);
+  });
+
+  it('always installs a usable grid in the singleton', async () => {
+    // Even on the worst-case (bad mint + bad save), the singleton must end
+    // up with a valid 94x78 grid so the scene boots.
+    setTerrainGridForTesting(null);
+    const fields = await buildIslandMintTerrainFields(TerrainGrid.bakeFromAnalytical());
+    await bootTerrain({
+      save: 'garbage',
+      mint: { ...fields, terrain_base_grid_hash: 'b'.repeat(64) },
+    });
+    const live = getTerrainGrid();
+    expect(live.serialize().length).toBe(GRID_W * GRID_D);
   });
 });
 
