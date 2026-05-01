@@ -39,16 +39,14 @@ export function buildCliffSideMesh(
   const wallMaterial = new THREE.MeshStandardMaterial({
     map: textures.cliffSide,
     roughness: 0.94,
-    // polygonOffset biases the wall's depth slightly toward the camera so it
-    // always wins sub-pixel comparisons at the LAND/FRESHWATER seam where the
-    // wall meets the water surface plane and the LAND quad. Without this, the
-    // freshwater plane (at y = tierTop - 0.30) and the wall both have edges
-    // along the same line at the cell boundary, and the rasterizer ties show
-    // through as thin blue slivers between grass and water on certain camera
-    // angles. See memory/structure_gotchas.md.
+    // polygonOffset biases the wall's depth aggressively toward the camera so
+    // it wins sub-pixel ties at the LAND/FRESHWATER seam (the line where the
+    // wall meets both the water plane below and the LAND quad above). The
+    // initial -1/-1 wasn't enough on certain oblique camera angles — bumped to
+    // -4/-4 to be robust. See memory/structure_gotchas.md.
     polygonOffset: true,
-    polygonOffsetFactor: -1,
-    polygonOffsetUnits: -1,
+    polygonOffsetFactor: -4,
+    polygonOffsetUnits: -4,
   });
   wallMaterial.name = 'cliff-side-material';
 
@@ -113,8 +111,17 @@ function buildWallQuadGeometry(
   dz: number,
   drop: number,
 ): THREE.BufferGeometry {
-  const lowerY = grid.cellHeight(lowerCx, lowerCz);
-  const upperY = lowerY + drop;
+  // Vertical bleed at top + bottom: pokes the wall a few mm above the LAND
+  // tier top and below the FRESHWATER bed. Fills the sub-pixel hairline at
+  // the LAND/wall corner that lets the water plane below show through as
+  // blue slivers along the bank — top is the only place the user can
+  // actually see this artefact (LAND quad ends at y=upperY exactly, wall
+  // top at y=upperY exactly → tied at the line). The brown poke above LAND
+  // is a much smaller artefact than the blue sliver and reads as part of
+  // the bank.
+  const VERTICAL_BLEED = 0.006;
+  const lowerY = grid.cellHeight(lowerCx, lowerCz) - VERTICAL_BLEED;
+  const upperY = grid.cellHeight(lowerCx, lowerCz) + drop + VERTICAL_BLEED;
 
   // Edge is the shared boundary between lower cell and its neighbor at (dx, dz).
   // Cell (cx, cz) covers world rect [origin + cx, origin + cx + 1] × similar in z.
