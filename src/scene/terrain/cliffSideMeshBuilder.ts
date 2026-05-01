@@ -67,21 +67,22 @@ export function buildCliffSideMesh(
   const lipGeometries: THREE.BufferGeometry[] = [];
 
   grid.forEachTierDiscontinuity((lowerCx, lowerCz, upperCx, upperCz, dx, dz, drop) => {
-    // Skip discontinuities involving FRESHWATER on the LOWER side: the water
-    // surface mesh + splat already paints the bank in Step 6/7. We still emit
-    // walls for LAND-LAND drops (cliffs) and for LAND-FRESHWATER where LAND is
-    // higher (river bank rock). The bank texture is the same painted cliff
-    // side stratification; the lip is suppressed for water boundaries.
     const lowerCell = grid.getCell(lowerCx, lowerCz);
     const isWaterBank = lowerCell.surface === 3 /* FRESHWATER */;
+
+    // Skip walls AND lips for water banks per user request: a brown stratified
+    // bank visibly exposed 30 cm above water reads as glitch / clutter rather
+    // than the AC canyon look it was meant to evoke. With the wall removed,
+    // the LAND quad ends at the cell boundary and the water surface sits 30 cm
+    // below it; the camera reads this as a clean grass-to-water transition.
+    // Walls are still emitted for LAND-LAND tier drops (real cliffs).
+    if (isWaterBank) return;
 
     const wallGeometry = buildWallQuadGeometry(grid, lowerCx, lowerCz, dx, dz, drop);
     wallGeometries.push(wallGeometry);
 
-    if (!isWaterBank) {
-      const lipGeometry = buildLipQuadGeometry(grid, upperCx, upperCz, dx, dz);
-      lipGeometries.push(lipGeometry);
-    }
+    const lipGeometry = buildLipQuadGeometry(grid, upperCx, upperCz, dx, dz);
+    lipGeometries.push(lipGeometry);
   });
 
   if (wallGeometries.length > 0) {

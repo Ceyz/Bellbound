@@ -30,13 +30,22 @@ export function createFreshwaterStylizedMaterial(): THREE.MeshStandardMaterial {
 
   const material = new THREE.MeshStandardMaterial({
     color: 0x000000,
-    depthWrite: false,
+    // Fully opaque so the river bed (the LAND quad at y = tier - 0.5 with
+    // splat shader painting wet-sand / dirt) doesn't bleed through the water
+    // surface at oblique angles. The 8% transparency the previous version
+    // shipped read as a glitchy brown strip at the bank edge from any 3D
+    // camera angle (visible through the thinner-looking water at the edge),
+    // even though the spec'd canyon look (D17) intended to expose that
+    // material at a single pixel-line edge. Going fully opaque reads as a
+    // cleaner blue surface; the bed is still rendered for player physics
+    // (cellHeight returns the bed Y for FW cells) but never seen.
+    depthWrite: true,
     emissive: 0xffffff,
     metalness: 0,
-    opacity: 0.92,
+    opacity: 1.0,
     roughness: 1.0,
     side: THREE.DoubleSide,
-    transparent: true,
+    transparent: false,
   });
   material.name = 'freshwater-stylized';
   material.userData.freshwaterUniforms = uniforms;
