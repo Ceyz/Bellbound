@@ -11,7 +11,29 @@ import {
   Tier,
   tierHeight,
 } from '../src/scene/terrain/TerrainGrid';
-import type { BuiltStructure } from '../src/scene/terrain/builtStructure';
+import {
+  deriveStructureGeometry,
+  type BuiltStructure,
+  type BuiltStructureKind,
+  type Rotation,
+} from '../src/scene/terrain/builtStructure';
+
+function testStruct(
+  kind: BuiltStructureKind,
+  originCell: [number, number],
+  rotation: Rotation,
+  length = 2,
+): BuiltStructure {
+  return deriveStructureGeometry({
+    id: `test-${kind}-${originCell[0]}-${originCell[1]}-${rotation}`,
+    kind,
+    originCell,
+    rotation,
+    length,
+    width: 1,
+    style: 0,
+  });
+}
 
 describe('TerrainGrid — geometry constants', () => {
   it('exposes the spec-locked grid dimensions', () => {
@@ -222,10 +244,8 @@ describe('TerrainGrid — isTraversable', () => {
   it('LAND tier 0 → tier 1 with a staircase spanning both cells is traversable', () => {
     const fromCx = 36, fromCz = 24;
     const toCx = 37, toCz = 24;
-    const staircase: BuiltStructure = {
-      kind: 'staircase',
-      cells: [[fromCx, fromCz], [toCx, toCz]],
-    };
+    // (36,24) -> (37,24): forward=+X, so rotation=0, origin=lower-tier cell.
+    const staircase = testStruct('staircase', [fromCx, fromCz], 0);
     expect(grid.isTraversable(fromCx, fromCz, toCx, toCz, [staircase])).toBe(true);
   });
 
@@ -242,10 +262,8 @@ describe('TerrainGrid — isTraversable', () => {
   it('LAND → FRESHWATER with a bridge structure spanning both cells is traversable', () => {
     const fromCx = 47, fromCz = 46;
     const toCx = 47, toCz = 45;
-    const bridge: BuiltStructure = {
-      kind: 'bridge',
-      cells: [[fromCx, fromCz], [toCx, toCz]],
-    };
+    // (47,46) -> (47,45): forward=-Z, so rotation=270, origin=land endpoint.
+    const bridge = testStruct('bridge', [fromCx, fromCz], 270);
     expect(grid.isTraversable(fromCx, fromCz, toCx, toCz, [bridge])).toBe(true);
   });
 
@@ -307,10 +325,7 @@ describe('TerrainGrid — isTraversable', () => {
     // Adjacent LAND/FRESHWATER pair (47, 46)/(47, 45) per earlier tests.
     const fromCx = 47, fromCz = 46;
     const toCx = 47, toCz = 45;
-    const fakeStaircase: BuiltStructure = {
-      kind: 'staircase',
-      cells: [[fromCx, fromCz], [toCx, toCz]],
-    };
+    const fakeStaircase = testStruct('staircase', [fromCx, fromCz], 270);
     expect(grid.isTraversable(fromCx, fromCz, toCx, toCz, [fakeStaircase])).toBe(false);
   });
 });

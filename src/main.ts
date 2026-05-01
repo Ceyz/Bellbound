@@ -6,8 +6,9 @@ import { rollingConfig, invalidateRollingCache } from './scene/rollingWorld';
 import {
   getPlayerStandingHeight,
 } from './scene/heightmap';
-import { Surface, TERRAIN_ORIGIN, Tier, getTerrainGrid } from './scene/terrain/TerrainGrid';
+import { GRID_D, GRID_W, Surface, TERRAIN_ORIGIN, Tier, getTerrainGrid } from './scene/terrain/TerrainGrid';
 import { bootTerrain, type IslandMintTerrainFields } from './scene/terrain/terrainSave';
+import { bootBuiltStructures, getBuiltStructures, type BuiltStructure } from './scene/terrain/builtStructure';
 import { sampleIslandShape } from './scene/islandShape';
 import {
   initTerraformFx,
@@ -16,7 +17,6 @@ import {
   spawnSplash,
   updateTerraformFx,
 } from './scene/terraformFx';
-import type { BuiltStructure } from './scene/terrain/builtStructure';
 import { BuildMode, type TerraformTool } from './buildMode/buildMode';
 import { mountBuildModeUI } from './buildMode/buildModeUI';
 import {
@@ -53,12 +53,13 @@ declare global {
       getCursorState: () => null | { visible: boolean; position: [number, number, number] };
     };
     /**
-     * Dev hook: pre-mounted `island_save.state.terrain` payload to load at boot.
-     * Set by tooling / E2E tests / dev console; read by `bootTerrain` before
-     * the scene mounts. Production reads the same shape from the inscription
-     * fetch path (Phase A). Never set in production builds.
+     * Dev hook: pre-mounted `island_save.state` payload to load at boot.
+     * Set by tooling / E2E tests / dev console; read by `bootTerrain` and
+     * `bootBuiltStructures` before the scene mounts. Production reads the
+     * same shape from the inscription fetch path (Phase A). Never set in
+     * production builds.
      */
-    __BELLBOUND_SAVE__?: { state?: { terrain?: unknown } };
+    __BELLBOUND_SAVE__?: { state?: { terrain?: unknown; built_structures?: unknown } };
     /**
      * Dev hook: pre-mounted `island_mint.initial_state` terrain block. When
      * present, `bootTerrain` validates `terrain_base_grid_hash` and refuses
@@ -100,14 +101,23 @@ renderer.shadowMap.type = THREE.PCFSoftShadowMap;
 // inscription fetch (Phase A). With neither hook set, `bootTerrain` ends up
 // at the analytical-bake fallback path — same outcome as the previous lazy
 // `getTerrainGrid()` first read, just with deterministic boot timing.
-const __saveTerrain = window.__BELLBOUND_SAVE__?.state?.terrain;
+const __saveState = window.__BELLBOUND_SAVE__?.state;
 const __mintFields = window.__BELLBOUND_MINT__?.initial_state;
-const __bootResult = await bootTerrain({ save: __saveTerrain, mint: __mintFields });
+const __bootResult = await bootTerrain({ save: __saveState?.terrain, mint: __mintFields });
 if (__bootResult.fatalMintErrors.length > 0) {
   console.error('[bellbound] island mint terrain metadata invalid:', __bootResult.fatalMintErrors);
 }
 if (__bootResult.errors.length > 0) {
   console.warn('[bellbound] terrain save load errors:', __bootResult.errors);
+}
+
+// Step 9.1: load player-placed structures (bridges, staircases, inclines).
+// Empty list when there's no save — registry is then in its post-init state
+// and `getBuiltStructures()` returns []. Errors here are non-fatal: validated
+// structures install, the rest are skipped with a warning.
+const __structResult = bootBuiltStructures(__saveState?.built_structures, GRID_W, GRID_D);
+if (__structResult.errors.length > 0) {
+  console.warn('[bellbound] built_structures load errors:', __structResult.errors);
 }
 
 const island = createIslandScene();
@@ -678,7 +688,7 @@ renderer.setAnimationLoop(() => {
   // staircases). With no structures, the resolver locks the player to their
   // starting tier and bans water entry — which matches the post-Step-0 scene
   // (no built bridges, no staircases).
-  const builtStructures: readonly BuiltStructure[] = [];
+  const builtStructures: readonly BuiltStructure[] = getBuiltStructures();
   const terrainGrid = getTerrainGrid();
   const r = PLAYER_COLLISION_RADIUS;
   const d = r * 0.7071;
