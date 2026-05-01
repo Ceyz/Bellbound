@@ -8,7 +8,9 @@ import {
 } from './scene/heightmap';
 import { GRID_D, GRID_W, Surface, TERRAIN_ORIGIN, Tier, getTerrainGrid } from './scene/terrain/TerrainGrid';
 import { bootTerrain, type IslandMintTerrainFields } from './scene/terrain/terrainSave';
-import { bootBuiltStructures, getBuiltStructures, type BuiltStructure } from './scene/terrain/builtStructure';
+import { addBuiltStructure, bootBuiltStructures, getBuiltStructures, type BuiltStructure } from './scene/terrain/builtStructure';
+import { findBridgePlacement } from './scene/terrain/bridgePlacement';
+import { syncBridgeMeshes } from './scene/bridgeMeshes';
 import { sampleIslandShape } from './scene/islandShape';
 import {
   initTerraformFx,
@@ -66,6 +68,13 @@ declare global {
      * the save on silent-drift mismatch (spec §3.5).
      */
     __BELLBOUND_MINT__?: { initial_state?: IslandMintTerrainFields };
+    /**
+     * Dev-only hook: force a bridge mesh resync. Useful when an E2E test
+     * (or the dev console) installed a structure via the registry directly,
+     * bypassing the BuildMode tool's apply hook. Production code never calls
+     * this — the tool's `apply` already triggers a rebuild on placement.
+     */
+    __BELLBOUND_DEBUG_REBUILD_BRIDGES__?: () => void;
   }
 }
 
@@ -263,6 +272,22 @@ const buildMode = new BuildMode(island);
 mountBuildModeUI(buildMode);
 
 const terraformGrid = getTerrainGrid();
+
+// Step 9.2: bridge deck meshes. One Group child per placed bridge, rebuilt
+// on every placement / removal. Initial sync covers any structures the boot
+// path loaded from `island_save.state.built_structures`.
+const bridgeMeshGroup = new THREE.Group();
+bridgeMeshGroup.name = 'bridge-meshes';
+island.scene.add(bridgeMeshGroup);
+function rebuildBridgeMeshes(): void {
+  syncBridgeMeshes(bridgeMeshGroup, getBuiltStructures(), (cx, cz) => {
+    return terraformGrid.cellHeight(cx, cz);
+  });
+}
+rebuildBridgeMeshes();
+if (import.meta.env.DEV) {
+  window.__BELLBOUND_DEBUG_REBUILD_BRIDGES__ = rebuildBridgeMeshes;
+}
 
 // AC-style terraforming view: while a tool is active, flatten the world (kill
 // the parabolic rolling warp) AND switch the camera to a steep top-down
@@ -527,6 +552,30 @@ buildMode.registerTool(trackUndo({
     return null;
   },
 }));
+
+// Step 9.2: bridge placement tool. The cursor anchors at the LAND start cell;
+// `findBridgePlacement` auto-picks the first cardinal rotation that produces
+// a valid LAND-FRESHWATER-LAND span (length=3 fixed v1). Manual rotation
+// (R key) lands as a polish pass once we want length>3 bridges.
+//
+// Bridge edits sit OUTSIDE the byte-level undo ring buffer — they don't
+// touch grid bytes, just the structures registry. A separate "remove bridge"
+// tool lands in the bridges-polish pass; for v1 placement is one-way.
+buildMode.registerTool({
+  kind: 'bridge_place',
+  label: 'Pont',
+  canApply: (cx, cz) => {
+    return findBridgePlacement(terraformGrid, getBuiltStructures(), cx, cz) !== null;
+  },
+  apply: (cx, cz) => {
+    const placement = findBridgePlacement(terraformGrid, getBuiltStructures(), cx, cz);
+    if (!placement) return 'no_valid_placement';
+    const result = addBuiltStructure(placement.serialized, GRID_W, GRID_D);
+    if (!result.structure) return result.errors[0] ?? 'add_structure_failed';
+    rebuildBridgeMeshes();
+    return null;
+  },
+});
 
 /**
  * Spawn the post-edit visual feedback at the cell's current top. Called

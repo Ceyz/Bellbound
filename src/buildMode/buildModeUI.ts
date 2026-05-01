@@ -160,11 +160,17 @@ function refreshModalItems(modal: HTMLElement, buildMode: BuildMode, onClose: ()
     { id: 'cliff', title: 'Falaise', tools: [] },
     { id: 'water', title: 'Eau', tools: [] },
     { id: 'path', title: 'Chemin', tools: [] },
+    { id: 'structure', title: 'Structures', tools: [] },
   ];
   const sectionByKind = (kind: BuildKind): typeof sections[number] | null => {
     if (kind.startsWith('cliff_')) return sections[0];
     if (kind.startsWith('water_')) return sections[1];
     if (kind.startsWith('path_')) return sections[2];
+    // Step 9 placement tools: bridge_place, staircase_place (9.4),
+    // incline_place (9.4). Grouped under "Structures" so they share a panel.
+    if (kind.startsWith('bridge_')
+        || kind.startsWith('staircase_')
+        || kind.startsWith('incline_')) return sections[3];
     return null;
   };
 
@@ -358,6 +364,19 @@ function renderItemVisual(kind: BuildKind): string {
           <path d="M12 12 L36 36 M36 12 L12 36"
                 stroke="#b54a35" stroke-width="3" stroke-linecap="round"/>
         </svg>`;
+    case 'bridge_place':
+      // Wood-plank deck spanning a strip of water with two land caps.
+      return `
+        <svg viewBox="0 0 48 48" width="46" height="46" aria-hidden="true">
+          <rect x="2" y="34" width="10" height="10" fill="#a8d2a4" stroke="#5a7e58" stroke-width="1.5"/>
+          <rect x="36" y="34" width="10" height="10" fill="#a8d2a4" stroke="#5a7e58" stroke-width="1.5"/>
+          <path d="M2 38 Q12 34 24 38 T46 38" fill="none" stroke="#5fb1cf" stroke-width="2"/>
+          <rect x="6" y="22" width="36" height="8" rx="2" fill="#9b6e3f" stroke="#5e3f1f" stroke-width="2"/>
+          <line x1="14" y1="22" x2="14" y2="30" stroke="#5e3f1f" stroke-width="1.2"/>
+          <line x1="22" y1="22" x2="22" y2="30" stroke="#5e3f1f" stroke-width="1.2"/>
+          <line x1="30" y1="22" x2="30" y2="30" stroke="#5e3f1f" stroke-width="1.2"/>
+          <line x1="38" y1="22" x2="38" y2="30" stroke="#5e3f1f" stroke-width="1.2"/>
+        </svg>`;
     default:
       return `
         <svg viewBox="0 0 48 48" width="46" height="46" aria-hidden="true">
@@ -509,9 +528,10 @@ function injectStyles() {
       padding: 2px 4px 4px;
       margin-top: 4px;
     }
-    .build-modal-section-header.build-section-cliff { color: #7a5630; }
-    .build-modal-section-header.build-section-water { color: #2d6783; }
-    .build-modal-section-header.build-section-path  { color: #a8702a; }
+    .build-modal-section-header.build-section-cliff     { color: #7a5630; }
+    .build-modal-section-header.build-section-water     { color: #2d6783; }
+    .build-modal-section-header.build-section-path      { color: #a8702a; }
+    .build-modal-section-header.build-section-structure { color: #5e3f1f; }
     .build-modal-section-row {
       display: flex;
       flex-wrap: wrap;
@@ -670,6 +690,7 @@ function injectStyles() {
     .build-item-circle-cliff_lower { background: #e3a866; }  /* warm earth    */
     .build-item-circle-water_dig   { background: #7ab9d4; }  /* lake blue     */
     .build-item-circle-water_fill  { background: #b3dde6; }  /* shallow blue  */
+    .build-item-circle-bridge_place { background: #d8b990; }  /* warm wood     */
 
     .build-item-label {
       font-size: 11px;
