@@ -24,7 +24,6 @@ import type { SurfaceTextureSet } from './proceduralTextures';
 import { loadSurfaceTextures } from './surfaceTextureLoader';
 import { createTerrainSplatMaterial, updateTerrainSplatMaterial } from './terrainSplatMaterial';
 import { applyAcnhLighting, applyAcnhLightingRecursive } from './acnhLighting';
-import { createRiverBankLip } from './riverBankLip';
 import { buildCliffSideMesh } from './terrain/cliffSideMeshBuilder';
 import { createBeachWaveSystem, updateBeachWaveSystem, type BeachWaveSystem } from './beachWaveSystem';
 import { createShoreWashSystem, updateShoreWashSystem, type ShoreWashSystem } from './shoreWashSystem';
@@ -148,8 +147,11 @@ export function createIslandScene(): IslandScene {
   const cliffSideWalls = buildCliffSideMesh(getTerrainGrid(), surfaceTextures);
   scene.add(cliffSideWalls);
 
-  const riverBankLips = createRiverBankLip(surfaceTextures);
-  scene.add(riverBankLips);
+  // River bank lip mesh (the green grass strips along the river edges) was
+  // removed at user request — same rationale as the cliff lips: the static
+  // mesh did not move with player-edited water cells and read as glitchy
+  // green bars floating along the banks. The module is kept for a future
+  // grid-aware re-implementation. See memory/structure_gotchas.md.
 
   // Both shore-wave systems hidden during the Step 0→4 refactor. They
   // anchor on `sampleShoreAnchors()` (analytical SDF), so re-enabling either
@@ -192,21 +194,8 @@ export function createIslandScene(): IslandScene {
   disableFrustumCullingRecursive(cliffSideWalls);
 
   disableCastShadowRecursive(cliffSideWalls);
-  disableCastShadowRecursive(riverBankLips);
 
   applyAcnhLightingRecursive(cliffSideWalls);
-  applyAcnhLightingRecursive(riverBankLips);
-
-  const riverBankMeshes: THREE.Mesh<THREE.BufferGeometry, THREE.MeshStandardMaterial>[] = [];
-  riverBankLips.traverse((child) => {
-    if (child instanceof THREE.Mesh && child.material instanceof THREE.MeshStandardMaterial) {
-      riverBankMeshes.push(child as THREE.Mesh<THREE.BufferGeometry, THREE.MeshStandardMaterial>);
-    }
-  });
-  if (riverBankMeshes.length > 0) {
-    applyRollingShaderTo(riverBankMeshes[0].material);
-  }
-  disableFrustumCullingRecursive(riverBankLips);
 
   const player = new THREE.Group();
   player.name = 'greybox-player';

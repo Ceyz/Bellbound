@@ -81,7 +81,14 @@ function buildBridgeMesh(
   // Endpoints share a tier — top of deck flush with the LAND tier top.
   const tierTop = gridSampleTierTop(originCx, originCz);
   mesh.position.set(wx, tierTop - DECK_THICKNESS * 0.5, wz);
-  mesh.castShadow = true;
+  // Shadow casting disabled until the custom depth material is patched with
+  // the rolling-world warp. Without it, the shadow pass renders the mesh at
+  // flat world Y while the visible pass renders it warped — produces visible
+  // self-shadow artefacts ("big ombre" that grows as the player moves
+  // relative to the bridge). Receiving still works because the worldpos
+  // patch corrects the shadow lookup position on the receiver side.
+  // See memory/structure_gotchas.md.
+  mesh.castShadow = false;
   mesh.receiveShadow = true;
   // GPU-warp the mesh with the rolling-world parabola so the deck follows the
   // ground around the player. Without this the deck stays at flat world Y while
@@ -238,7 +245,14 @@ function buildInclineMesh(
   mesh.rotation.y = -((s.rotation * Math.PI) / 180);
   // Wedge centred on the lower cell, with its bottom at lower tier.
   mesh.position.set(lowerWx, tierLower, lowerWz);
-  mesh.castShadow = true;
+  // Shadow casting disabled until the custom depth material is patched with
+  // the rolling-world warp. Without it, the shadow pass renders the mesh at
+  // flat world Y while the visible pass renders it warped — produces visible
+  // self-shadow artefacts ("big ombre" that grows as the player moves
+  // relative to the bridge). Receiving still works because the worldpos
+  // patch corrects the shadow lookup position on the receiver side.
+  // See memory/structure_gotchas.md.
+  mesh.castShadow = false;
   mesh.receiveShadow = true;
   applyRollingShaderTo(mesh.material as THREE.Material);
   disableFrustumCullingForRolling(mesh);
