@@ -48,21 +48,6 @@ export function buildCliffSideMesh(
   });
   cliffWallMaterial.name = 'cliff-wall-material';
 
-  // LAND-FRESHWATER walls (river / pond banks): wet-sand riverbed texture so
-  // the bank reads as natural earth instead of stratified rock. NO bleeds AND
-  // NO polygonOffset — biasing the wall toward the camera forces it to win
-  // depth against the LAND grass at the top seam, which renders as a brown
-  // line drawn over the grass on stair-stepped banks. Instead the wall geometry
-  // is inset 1 cm below the LAND tier top (see `buildWallQuadGeometry` for
-  // `withBleed: false`), so its top edge can never reach the grass plane in
-  // the first place. Per ChatGPT review.
-  const riverBankMaterial = new THREE.MeshStandardMaterial({
-    map: textures.riverbed,
-    roughness: 0.92,
-    side: THREE.DoubleSide,
-  });
-  riverBankMaterial.name = 'river-bank-material';
-
   const lipMaterial = new THREE.MeshStandardMaterial({
     map: textures.cliffTop,
     roughness: 0.9,
@@ -70,39 +55,31 @@ export function buildCliffSideMesh(
   lipMaterial.name = 'cliff-side-lip-material';
 
   const cliffGeometries: THREE.BufferGeometry[] = [];
-  const riverBankGeometries: THREE.BufferGeometry[] = [];
   const lipGeometries: THREE.BufferGeometry[] = [];
 
   grid.forEachTierDiscontinuity((lowerCx, lowerCz, upperCx, upperCz, dx, dz, drop) => {
     const lowerCell = grid.getCell(lowerCx, lowerCz);
     const isWaterBank = lowerCell.surface === 3 /* FRESHWATER */;
 
-    // Bleeds (both EDGE_BLEED in perpendicular and VERTICAL_BLEED at top +
-    // bottom) only on cliffs. River banks ship without bleeds because the
-    // stair-stepped LAND-FW outline would otherwise expose the bleed as a
-    // small overshooting "brown blade" at every zigzag corner.
-    const wallGeometry = buildWallQuadGeometry(grid, lowerCx, lowerCz, dx, dz, drop, !isWaterBank);
-    if (isWaterBank) {
-      riverBankGeometries.push(wallGeometry);
-    } else {
-      cliffGeometries.push(wallGeometry);
-      lipGeometries.push(buildLipQuadGeometry(grid, upperCx, upperCz, dx, dz));
-    }
+    // Skip walls + lips entirely for FRESHWATER edges per user feedback. The
+    // visible "30 cm drop" then comes from the LAND quad ending at the cell
+    // boundary at y = tierTop and the (opaque) water surface plane sitting at
+    // y = tierTop - 0.30 inside the FW cell. From oblique angles this reads
+    // as a clean vertical step from grass to water without an exposed bank
+    // material — and no brown rim around ponds when seen from above. The
+    // wet-sand wall material + recessed geometry helped avoid the worst
+    // artefacts, but the user's preference is no exposed bank at all.
+    if (isWaterBank) return;
+
+    const wallGeometry = buildWallQuadGeometry(grid, lowerCx, lowerCz, dx, dz, drop, true);
+    cliffGeometries.push(wallGeometry);
+    lipGeometries.push(buildLipQuadGeometry(grid, upperCx, upperCz, dx, dz));
   });
 
   if (cliffGeometries.length > 0) {
     const merged = mergeBufferGeometries(cliffGeometries);
     const mesh = new THREE.Mesh(merged, cliffWallMaterial);
     mesh.name = 'cliff-walls';
-    mesh.castShadow = false;
-    mesh.receiveShadow = true;
-    group.add(mesh);
-  }
-
-  if (riverBankGeometries.length > 0) {
-    const merged = mergeBufferGeometries(riverBankGeometries);
-    const mesh = new THREE.Mesh(merged, riverBankMaterial);
-    mesh.name = 'river-bank-walls';
     mesh.castShadow = false;
     mesh.receiveShadow = true;
     group.add(mesh);
