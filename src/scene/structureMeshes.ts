@@ -7,6 +7,10 @@ import {
   forwardOf,
   type BuiltStructure,
 } from './terrain/builtStructure';
+import {
+  applyRollingShaderTo,
+  disableFrustumCullingForRolling,
+} from './rollingWorld';
 
 /**
  * Step 9.2 / 9.4 — built-structure mesh syncer.
@@ -79,59 +83,165 @@ function buildBridgeMesh(
   mesh.position.set(wx, tierTop - DECK_THICKNESS * 0.5, wz);
   mesh.castShadow = true;
   mesh.receiveShadow = true;
+  // GPU-warp the mesh with the rolling-world parabola so the deck follows the
+  // ground around the player. Without this the deck stays at flat world Y while
+  // everything else rolls — visible as the bridge "lifting" when the player
+  // descends a hill, exactly the bug the rollingWorld.ts header warns about.
+  applyRollingShaderTo(mesh.material as THREE.Material);
+  disableFrustumCullingForRolling(mesh);
   return mesh;
 }
 
 /**
- * Build a tiered (staircase / incline) mesh. v1 minimum: a single solid box
- * spanning the two-cell footprint from the lower tier to the upper tier.
- * Top face is flush with the upper tier so it visually fills the cliff face
- * the player would otherwise face. Stepped vs sloped geometry differentiation
- * lands in a polish pass — for v1 they share the box and differ only by
- * colour (staircase = gray, incline = tan).
+ * Build a staircase: two stacked boxes filling the cliff face on the lower
+ * cell. The lower step covers the front half (toward the lower-tier ground)
+ * at half the tier delta; the upper step covers the back half (toward the
+ * cliff plateau) at the full tier delta. Together they read as a 2-step
+ * silhouette the player ascends. Origin at the lower-tier cell; placement
+ * guarantees `tierUpper - tierLower == 1`.
  */
-function buildTieredMesh(
+function buildStaircaseGroup(
+  s: BuiltStructure,
+  gridSampleTierTop: (cx: number, cz: number) => number,
+): THREE.Group {
+  const [fx, fz] = forwardOf(s.rotation);
+  const [originCx, originCz] = s.originCell;
+
+  const tierLower = gridSampleTierTop(originCx, originCz);
+  const tierUpper = gridSampleTierTop(originCx + fx, originCz + fz);
+  const height = Math.max(0.05, tierUpper - tierLower);
+  const halfHeight = height * 0.5;
+
+  // Cell-local center of the lower cell in world coords.
+  const lowerWx = TERRAIN_ORIGIN.x + (originCx + 0.5) * CELL;
+  const lowerWz = TERRAIN_ORIGIN.z + (originCz + 0.5) * CELL;
+
+  const group = new THREE.Group();
+  group.name = `staircase-${s.id}`;
+
+  // Two box geometries — keep distinct so each step gets its own scale.
+  const material = new THREE.MeshStandardMaterial({
+    color: STAIRCASE_COLOR,
+    roughness: 0.9,
+    metalness: 0,
+  });
+
+  const stepLength = CELL * 0.5;
+  const stepWidth = s.width * CELL;
+
+  // Step 1 (front, toward lower tier): half-height, front half of the lower cell.
+  const step1 = new THREE.Mesh(unitDeckGeometry(), material);
+  step1.scale.set(stepLength, halfHeight, stepWidth);
+  step1.position.set(
+    lowerWx - fx * (CELL * 0.25),
+    tierLower + halfHeight * 0.5,
+    lowerWz - fz * (CELL * 0.25),
+  );
+  step1.castShadow = true;
+  step1.receiveShadow = true;
+  step1.rotation.y = -((s.rotation * Math.PI) / 180);
+  group.add(step1);
+
+  // Step 2 (back, toward cliff): full-height, back half of the lower cell.
+  const step2 = new THREE.Mesh(unitDeckGeometry(), material);
+  step2.scale.set(stepLength, height, stepWidth);
+  step2.position.set(
+    lowerWx + fx * (CELL * 0.25),
+    tierLower + height * 0.5,
+    lowerWz + fz * (CELL * 0.25),
+  );
+  step2.castShadow = true;
+  step2.receiveShadow = true;
+  step2.rotation.y = -((s.rotation * Math.PI) / 180);
+  group.add(step2);
+
+  applyRollingShaderTo(material);
+  disableFrustumCullingForRolling(step1);
+  disableFrustumCullingForRolling(step2);
+  return group;
+}
+
+let _wedgeGeometryCache: THREE.BufferGeometry | null = null;
+
+/**
+ * Unit wedge geometry: an axis-aligned right-triangular prism from -X bottom
+ * to +X top, used as the incline base shape. Six unique vertices, five faces
+ * (front/back triangles, bottom/back rectangles, sloped top). Cached once
+ * and shared across every incline mesh.
+ *
+ * The slope rises from y=0 at the -X side to y=1 at the +X side, so when the
+ * mesh is positioned with its origin at the lower-tier cell center and
+ * scaled by `(length, height, width)` it spans LAND tier T → LAND tier T+1
+ * smoothly along the forward axis.
+ */
+function unitWedgeGeometry(): THREE.BufferGeometry {
+  if (_wedgeGeometryCache) return _wedgeGeometryCache;
+  const v0 = [-0.5, 0, -0.5];
+  const v1 = [+0.5, 0, -0.5];
+  const v2 = [+0.5, 1, -0.5];
+  const v3 = [-0.5, 0, +0.5];
+  const v4 = [+0.5, 0, +0.5];
+  const v5 = [+0.5, 1, +0.5];
+  const positions = new Float32Array([
+    // Front triangle (z = -0.5, normal -Z): v0, v2, v1
+    ...v0, ...v2, ...v1,
+    // Back triangle (z = +0.5, normal +Z): v3, v4, v5
+    ...v3, ...v4, ...v5,
+    // Bottom rectangle (y = 0, normal -Y): v0, v1, v4 / v0, v4, v3
+    ...v0, ...v1, ...v4,
+    ...v0, ...v4, ...v3,
+    // Back wall (x = +0.5, normal +X): v1, v4, v5 / v1, v5, v2
+    ...v1, ...v4, ...v5,
+    ...v1, ...v5, ...v2,
+    // Sloped top (normal up-and-toward -X): v0, v5, v2 / v0, v3, v5
+    ...v0, ...v5, ...v2,
+    ...v0, ...v3, ...v5,
+  ]);
+  const geometry = new THREE.BufferGeometry();
+  geometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+  geometry.computeVertexNormals();
+  _wedgeGeometryCache = geometry;
+  return geometry;
+}
+
+/**
+ * Build an incline: a sloped wedge anchored at the lower-tier cell, filling
+ * the gap between LAND tier T and LAND tier T+1. The slope's top edge is
+ * flush with the upper tier so the player's vertical-lag lerp reads as a
+ * smooth ramp rather than a teleport when the Y override snaps them up.
+ */
+function buildInclineMesh(
   s: BuiltStructure,
   gridSampleTierTop: (cx: number, cz: number) => number,
 ): THREE.Mesh {
   const [fx, fz] = forwardOf(s.rotation);
   const [originCx, originCz] = s.originCell;
-  const upperCx = originCx + fx;
-  const upperCz = originCz + fz;
-
-  const oWx = TERRAIN_ORIGIN.x + (originCx + 0.5) * CELL;
-  const oWz = TERRAIN_ORIGIN.z + (originCz + 0.5) * CELL;
-  const uWx = TERRAIN_ORIGIN.x + (upperCx + 0.5) * CELL;
-  const uWz = TERRAIN_ORIGIN.z + (upperCz + 0.5) * CELL;
-  const centerWx = (oWx + uWx) * 0.5;
-  const centerWz = (oWz + uWz) * 0.5;
 
   const tierLower = gridSampleTierTop(originCx, originCz);
-  const tierUpper = gridSampleTierTop(upperCx, upperCz);
-  // Placement enforces tierUpper - tierLower == 1, but be defensive against
-  // grid edits adjacent to the structure (which the gate prevents anyway,
-  // but a structure loaded from a save could in theory carry a stale tier).
+  const tierUpper = gridSampleTierTop(originCx + fx, originCz + fz);
   const height = Math.max(0.05, tierUpper - tierLower);
 
-  const length = 2 * CELL;
-  const width = s.width * CELL;
-  const color = s.kind === 'staircase' ? STAIRCASE_COLOR : INCLINE_COLOR;
+  const lowerWx = TERRAIN_ORIGIN.x + (originCx + 0.5) * CELL;
+  const lowerWz = TERRAIN_ORIGIN.z + (originCz + 0.5) * CELL;
 
   const mesh = new THREE.Mesh(
-    unitDeckGeometry(),
+    unitWedgeGeometry(),
     new THREE.MeshStandardMaterial({
-      color,
+      color: INCLINE_COLOR,
       roughness: 0.9,
       metalness: 0,
     }),
   );
-  mesh.name = `${s.kind}-block-${s.id}`;
+  mesh.name = `incline-${s.id}`;
+  // Wedge spans the lower cell only — length=1m along forward.
+  mesh.scale.set(CELL, height, s.width * CELL);
   mesh.rotation.y = -((s.rotation * Math.PI) / 180);
-  mesh.scale.set(length, height, width);
-  // Bottom face at lower tier, top face at upper tier.
-  mesh.position.set(centerWx, tierLower + height * 0.5, centerWz);
+  // Wedge centred on the lower cell, with its bottom at lower tier.
+  mesh.position.set(lowerWx, tierLower, lowerWz);
   mesh.castShadow = true;
   mesh.receiveShadow = true;
+  applyRollingShaderTo(mesh.material as THREE.Material);
+  disableFrustumCullingForRolling(mesh);
   return mesh;
 }
 
@@ -145,24 +255,27 @@ export function syncStructureMeshes(
   structures: readonly BuiltStructure[],
   gridSampleTierTop: (cx: number, cz: number) => number,
 ): void {
+  // Traverse so nested Groups (staircase = two steps in a Group) get their
+  // descendant materials disposed too. Direct-child-only iteration would leak
+  // staircase step materials on every rebuild.
   for (const child of group.children) {
-    if ((child as THREE.Mesh).material) {
-      const m = (child as THREE.Mesh).material;
-      if (Array.isArray(m)) m.forEach((mm) => mm.dispose());
-      else m.dispose();
-    }
+    child.traverse((descendant) => {
+      if (descendant instanceof THREE.Mesh) {
+        const m = descendant.material;
+        if (Array.isArray(m)) m.forEach((mm) => mm.dispose());
+        else m?.dispose();
+      }
+    });
   }
   group.clear();
 
   for (const s of structures) {
-    let mesh: THREE.Mesh;
     if (s.kind === 'bridge') {
-      mesh = buildBridgeMesh(s, gridSampleTierTop);
-    } else if (s.kind === 'staircase' || s.kind === 'incline') {
-      mesh = buildTieredMesh(s, gridSampleTierTop);
-    } else {
-      continue;
+      group.add(buildBridgeMesh(s, gridSampleTierTop));
+    } else if (s.kind === 'staircase') {
+      group.add(buildStaircaseGroup(s, gridSampleTierTop));
+    } else if (s.kind === 'incline') {
+      group.add(buildInclineMesh(s, gridSampleTierTop));
     }
-    group.add(mesh);
   }
 }

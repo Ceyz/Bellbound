@@ -147,12 +147,17 @@ function trackRiverContact(
 ): void {
   if (elapsed - state.lastRippleAt < RIPPLE_MIN_INTERVAL_SECONDS) return;
 
-  // Trigger when the *unresolved* position would have entered the river — the player
-  // tried to wade in and got pushed back by `pushPlayerOutOfRiver`. (Bridge passage
-  // was removed during the terraforming refactor scene cleanup; until player-placed
-  // bridges land in Step 9, all river entries trigger a ripple.)
+  // Trigger when the *unresolved* position would have entered the river AND the
+  // resolver pushed the player back out — that's the "bumped against the bank"
+  // signal. With Step 9.3's strict resolver this happens whenever the player
+  // walks into a bank with no bridge. When the player IS on a bridge, both
+  // pre- and post- positions sit inside river world coords (the bridge cells
+  // are FRESHWATER on the grid), so the post-resolve check skips the ripple
+  // and the deck doesn't read as "walking on water".
   const tried = isInRiver(preResolvePosition.x, preResolvePosition.z);
   if (!tried) return;
+  const stillInRiver = isInRiver(postResolvePosition.x, postResolvePosition.z);
+  if (stillInRiver) return;
 
   state.lastRippleAt = elapsed;
 

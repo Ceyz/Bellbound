@@ -68,7 +68,6 @@ export function createCliffSideMesh(surfaceTextures: SurfaceTextureSet): THREE.G
   const southWall = buildWallQuad(southLength, cliffHeight, wallMaterial, 'cliff-side-south', 'south');
   southWall.position.set(southCenterX, cliffHeight / 2, zMax);
   group.add(southWall);
-  group.add(buildSouthLip(southLength, southCenterX, zMax, cliffHeight, lipMaterial));
 
   // East-facing edge at x = xMax: continuous wall (the staircase opening that used to
   // split it was removed during the terraforming refactor scene cleanup).
@@ -77,7 +76,6 @@ export function createCliffSideMesh(surfaceTextures: SurfaceTextureSet): THREE.G
   const eastWall = buildWallQuad(eastLength, cliffHeight, wallMaterial, 'cliff-side-east', 'east');
   eastWall.position.set(xMax, cliffHeight / 2, eastCenterZ);
   group.add(eastWall);
-  group.add(buildEastLip(eastLength, eastCenterZ, xMax, cliffHeight, lipMaterial, 'cliff-side-east-lip'));
 
   // West-facing edge at x = xMin: new with the trimmed cliff zone. Without this
   // segment the plateau would have an open side facing the rest of the island.
@@ -86,7 +84,6 @@ export function createCliffSideMesh(surfaceTextures: SurfaceTextureSet): THREE.G
   const westWall = buildWallQuad(westLength, cliffHeight, wallMaterial, 'cliff-side-west', 'west');
   westWall.position.set(xMin, cliffHeight / 2, westCenterZ);
   group.add(westWall);
-  group.add(buildWestLip(westLength, westCenterZ, xMin, cliffHeight, lipMaterial));
 
   // North-facing edge at z = zMin: same reasoning as the west edge.
   const northLength = xMax - xMin + EDGE_OVERLAP_METERS * 2;
@@ -94,7 +91,15 @@ export function createCliffSideMesh(surfaceTextures: SurfaceTextureSet): THREE.G
   const northWall = buildWallQuad(northLength, cliffHeight, wallMaterial, 'cliff-side-north', 'north');
   northWall.position.set(northCenterX, cliffHeight / 2, zMin);
   group.add(northWall);
-  group.add(buildNorthLip(northLength, northCenterX, zMin, cliffHeight, lipMaterial));
+
+  // Per-edge "lip" overhangs (the AC-style green grass curl over each cliff face)
+  // were removed at user request: the static lip mesh did not move with the editable
+  // cliff edges and read as a glitchy green border that floated past the cell where
+  // the player had just terraformed. The cliff-top look without the lip is plainer
+  // but stays consistent under terraforming. The build helpers
+  // (`buildSouthLip`/`buildEastLip`/`buildWestLip`/`buildNorthLip`) are kept in this
+  // file as reference if a grid-aware re-implementation lands later.
+  void lipMaterial;
 
   return group;
 }
