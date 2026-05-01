@@ -49,17 +49,17 @@ export function buildCliffSideMesh(
   cliffWallMaterial.name = 'cliff-wall-material';
 
   // LAND-FRESHWATER walls (river / pond banks): wet-sand riverbed texture so
-  // the bank reads as natural earth instead of stratified rock. NO geometry
-  // bleed — the stair-stepped river outline turns the per-edge bleeds into
-  // visible "brown blades" overshooting at corners. Sub-pixel seams are
-  // covered by the polygonOffset biasing alone.
+  // the bank reads as natural earth instead of stratified rock. NO bleeds AND
+  // NO polygonOffset — biasing the wall toward the camera forces it to win
+  // depth against the LAND grass at the top seam, which renders as a brown
+  // line drawn over the grass on stair-stepped banks. Instead the wall geometry
+  // is inset 1 cm below the LAND tier top (see `buildWallQuadGeometry` for
+  // `withBleed: false`), so its top edge can never reach the grass plane in
+  // the first place. Per ChatGPT review.
   const riverBankMaterial = new THREE.MeshStandardMaterial({
     map: textures.riverbed,
     roughness: 0.92,
     side: THREE.DoubleSide,
-    polygonOffset: true,
-    polygonOffsetFactor: -4,
-    polygonOffsetUnits: -4,
   });
   riverBankMaterial.name = 'river-bank-material';
 
@@ -134,13 +134,17 @@ function buildWallQuadGeometry(
   drop: number,
   withBleed: boolean,
 ): THREE.BufferGeometry {
-  // Vertical bleed at top + bottom only when `withBleed` is set — used by
-  // LAND-LAND cliffs to fill the sub-pixel hairline at the LAND/wall corner.
-  // River banks pass `withBleed: false` because the bleed would protrude
-  // visibly at every zigzag corner along the stair-stepped river outline.
+  // Cliff (`withBleed: true`): vertical bleed +/-6mm at top & bottom to fill
+  // the sub-pixel hairline at the LAND/wall corner.
+  // River bank (`withBleed: false`): NO bleed, AND lower the top by 1 cm so
+  // the wall can never reach the LAND grass plane. Without polygonOffset the
+  // wall mustn't draw onto the grass top at the seam — recessing it a hair
+  // below LAND keeps the bank tucked under the grass edge regardless of
+  // camera angle. Per ChatGPT review.
   const VERTICAL_BLEED = withBleed ? 0.006 : 0;
+  const TOP_INSET = withBleed ? 0 : 0.01;
   const lowerY = grid.cellHeight(lowerCx, lowerCz) - VERTICAL_BLEED;
-  const upperY = grid.cellHeight(lowerCx, lowerCz) + drop + VERTICAL_BLEED;
+  const upperY = grid.cellHeight(lowerCx, lowerCz) + drop + VERTICAL_BLEED - TOP_INSET;
 
   // Edge is the shared boundary between lower cell and its neighbor at (dx, dz).
   // Cell (cx, cz) covers world rect [origin + cx, origin + cx + 1] × similar in z.
