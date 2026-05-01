@@ -313,9 +313,12 @@ describe('player surface decals', () => {
   it('spawns a ripple when the unresolved position would have entered the river off-bridge', () => {
     const island = createIslandScene();
     const riverX = 8;
-    const riverZ = 5 + 6 * Math.sin(8 * 0.08); // riverCenterZ(8)
-
-    island.player.position.set(riverX, 0, riverZ - 2);
+    const riverZ = 5; // straight river — `riverCenterZ(_)` returns 5
+    // Bank-side position (z = 2) sits outside the river footprint (river half
+    // width 1.8 around z=5 → river covers z ∈ [3.2, 6.8]); the player tried
+    // to step into the river center (z = 5) and the resolver pushed them
+    // back to the bank.
+    island.player.position.set(riverX, 0, 2);
     const tried = new THREE.Vector3(riverX, 0, riverZ);
 
     updatePlayerSurfaceDecals(island.surfaceDecals, {

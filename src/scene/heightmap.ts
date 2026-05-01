@@ -93,13 +93,15 @@ export function isOnCliff(worldX: number, worldZ: number): boolean {
 }
 
 /**
- * Z coordinate of the river centerline at a given X. Kept analytical because
- * the river-bank lip mesh and `pushPlayerOutOfRiver` still derive geometry
- * along this curve. Step 4 (grid-aware movement) replaces both consumers and
- * this helper goes away.
+ * Z coordinate of the river centerline at a given X. Straight (z=5) since v1
+ * cleanup — see `seedRiverCenterZ` in TerrainGrid.ts for the rationale (the
+ * previous sin meander rasterised to chaotic 1m zigzag at every inflection
+ * point). This helper still exists for the legacy `isInRiver` predicate
+ * consumers (`trackRiverContact` for the bank ripple decal); replace with a
+ * grid lookup when those go away.
  */
-export function riverCenterZ(worldX: number): number {
-  return 5 + 6 * Math.sin(worldX * 0.08);
+export function riverCenterZ(_worldX: number): number {
+  return 5;
 }
 
 export const HEIGHTMAP = {

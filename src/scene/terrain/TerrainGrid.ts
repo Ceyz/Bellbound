@@ -618,8 +618,16 @@ const SEED_RIVER_Z_MIN = -22;
 const SEED_RIVER_Z_MAX = 22;
 const SEED_RIVER_HALF_WIDTH = 1.8;
 
-function seedRiverCenterZ(wx: number): number {
-  return 5 + 6 * Math.sin(wx * 0.08);
+function seedRiverCenterZ(_wx: number): number {
+  // Straight river. The previous `5 + 6 * Math.sin(wx * 0.08)` meander put
+  // multiple inflection points along the river, and each one rasterised to a
+  // chaotic zigzag of 1m cell steps where consecutive sin slope changes
+  // produced "extra notches" in the bank outline. With cells locked at 1m
+  // (D1) a high-amplitude sinusoid can never read as a smooth curve. v1 ships
+  // with a straight river along z=5 — a future generator can layer in a
+  // bigger-than-cell smoothing or use diagonal-corner triangulation (D3) to
+  // bring the meander back without the visible jaggies.
+  return 5;
 }
 
 function seedIsInRiver(wx: number, wz: number): boolean {
