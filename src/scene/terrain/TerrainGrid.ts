@@ -658,14 +658,16 @@ export interface EditError {
 
 // ─── CompressionStream helpers ───────────────────────────────────────────
 // CompressionStream is browser-native and available in modern Node (≥18).
+// Exported so terrainSave.ts can split gunzip + length-check into distinct
+// error paths without re-implementing the stream plumbing.
 
-async function gzipBytes(input: Uint8Array): Promise<Uint8Array> {
+export async function gzipBytes(input: Uint8Array): Promise<Uint8Array> {
   const fresh = new Uint8Array(input);
   const stream = new Blob([fresh.buffer as ArrayBuffer]).stream().pipeThrough(new CompressionStream('gzip'));
   return new Uint8Array(await new Response(stream).arrayBuffer());
 }
 
-async function gunzipBytes(input: Uint8Array): Promise<Uint8Array> {
+export async function gunzipBytes(input: Uint8Array): Promise<Uint8Array> {
   const fresh = new Uint8Array(input);
   const stream = new Blob([fresh.buffer as ArrayBuffer]).stream().pipeThrough(new DecompressionStream('gzip'));
   return new Uint8Array(await new Response(stream).arrayBuffer());
@@ -685,6 +687,17 @@ export function getTerrainGrid(): TerrainGrid {
     _singleton = TerrainGrid.bakeFromAnalytical();
   }
   return _singleton;
+}
+
+/**
+ * Replace the active singleton with a grid loaded from a save payload (Step 8).
+ * Called by `terrainSave.applyTerrainSave()` after successful deserialize +
+ * validation. The bake-from-analytical fallback path inside `getTerrainGrid()`
+ * is unaffected: subsequent calls return the loaded grid until another replace
+ * (or test reset) lands.
+ */
+export function replaceTerrainGrid(grid: TerrainGrid): void {
+  _singleton = grid;
 }
 
 /** Test-only hook: replace the singleton with a custom grid for fixtures. */
