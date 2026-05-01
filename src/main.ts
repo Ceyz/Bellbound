@@ -75,6 +75,17 @@ declare global {
      * this — the tool's `apply` already triggers a rebuild on placement.
      */
     __BELLBOUND_DEBUG_REBUILD_BRIDGES__?: () => void;
+    /**
+     * Dev-only hook: programmatically place a bridge anchored at (cx, cz),
+     * bypassing the BuildMode pointer flow. Returns the placed structure id
+     * or null on failure. Critical for E2E because `import()` from the
+     * playwright/eval context gets a different module instance than the
+     * bundle (Vite HMR appends `?t=...` to the bundle's import URL), so a
+     * structure added via eval lives in a different registry than the loop
+     * reads. Going through this hook hits the same `addBuiltStructure` the
+     * tool uses.
+     */
+    __BELLBOUND_DEBUG_PLACE_BRIDGE__?: (cx: number, cz: number) => string | null;
   }
 }
 
@@ -287,6 +298,14 @@ function rebuildBridgeMeshes(): void {
 rebuildBridgeMeshes();
 if (import.meta.env.DEV) {
   window.__BELLBOUND_DEBUG_REBUILD_BRIDGES__ = rebuildBridgeMeshes;
+  window.__BELLBOUND_DEBUG_PLACE_BRIDGE__ = (cx: number, cz: number) => {
+    const placement = findBridgePlacement(terraformGrid, getBuiltStructures(), cx, cz);
+    if (!placement) return null;
+    const result = addBuiltStructure(placement.serialized, GRID_W, GRID_D);
+    if (!result.structure) return null;
+    rebuildBridgeMeshes();
+    return result.structure.id;
+  };
 }
 
 // AC-style terraforming view: while a tool is active, flatten the world (kill
@@ -724,19 +743,14 @@ renderer.setAnimationLoop(() => {
   const desiredZ = prevZ + velocity.z * delta;
   preResolvePosition.set(desiredX, prevHeight, desiredZ);
 
-  // Step 4 movement resolver. The previous trio
-  //   isInRiver(qx, qz) || height-delta > 0.5
-  // is replaced by `terrainGrid.isTraversable(fromCell, toCell, structures)`.
-  // The grid knows about all surface kinds (LAND tier 0-3, FRESHWATER, OCEAN,
-  // VOID), so cliff-edge blocking generalizes from "cliff = ±1 m" to any tier
-  // discontinuity automatically. Same body-probe pattern (cardinal +
-  // diagonals at PLAYER_COLLISION_RADIUS) so the player never pokes past a
-  // boundary before being stopped.
-  //
-  // `structures` is currently empty (Step 9 brings player-placed bridges and
-  // staircases). With no structures, the resolver locks the player to their
-  // starting tier and bans water entry — which matches the post-Step-0 scene
-  // (no built bridges, no staircases).
+  // Step 9.3 movement resolver. The Step 4 wading-relax wrapper is GONE: the
+  // player now goes through `terrainGrid.isTraversable(prev, to, structures)`
+  // verbatim, which blocks every LAND → FRESHWATER transition unless a bridge
+  // structure spans both cells. Bridges placed via the Step 9.2 tool feed
+  // `getBuiltStructures()` here so traversal opens up exactly where a deck
+  // exists. Same body-probe pattern (cardinal + diagonals at
+  // PLAYER_COLLISION_RADIUS) so the player never pokes past a boundary
+  // before being stopped.
   const builtStructures: readonly BuiltStructure[] = getBuiltStructures();
   const terrainGrid = getTerrainGrid();
   const r = PLAYER_COLLISION_RADIUS;
@@ -753,34 +767,10 @@ renderer.setAnimationLoop(() => {
     [-d, -d],
   ];
   const [prevCx, prevCz] = terrainGrid.worldToCell(prevX, prevZ);
-  // MVP movement policy: spec-compliant `isTraversable` blocks every LAND →
-  // FRESHWATER transition without a bridge structure, but bridges don't ship
-  // until Step 9. Without a relaxation here the player can soft-lock by
-  // terraforming water around themselves. We allow wading: target FRESHWATER
-  // counts as LAND for traversal purposes. Once Step 9 brings real bridges,
-  // this wrapper goes away and `isTraversable(...)` is called directly again.
-  const playerCanTraverse = (toCx: number, toCz: number): boolean => {
-    if (prevCx === toCx && prevCz === toCz) return true;
-    const dx = Math.abs(toCx - prevCx);
-    const dz = Math.abs(toCz - prevCz);
-    if (dx > 1 || dz > 1) return false;
-    if (!terrainGrid.cellInBounds(toCx, toCz)) return false;
-    const toSurface = terrainGrid.getSurface(toCx, toCz);
-    if (toSurface === Surface.VOID || toSurface === Surface.OCEAN) return false;
-    // FRESHWATER: allow wading (MVP relaxation).
-    if (toSurface === Surface.FRESHWATER) return true;
-    if (terrainGrid.getSurface(prevCx, prevCz) === Surface.FRESHWATER) return true;
-    const fromTier = terrainGrid.getTier(prevCx, prevCz);
-    const toTier = terrainGrid.getTier(toCx, toCz);
-    if (fromTier === toTier) return true;
-    // Different-tier LAND still requires a staircase/incline structure.
-    void builtStructures;
-    return false;
-  };
   const isBlockedAt = (x: number, z: number): boolean => {
     for (const [dx, dz] of bodyProbes) {
       const [probeCx, probeCz] = terrainGrid.worldToCell(x + dx, z + dz);
-      if (!playerCanTraverse(probeCx, probeCz)) return true;
+      if (!terrainGrid.isTraversable(prevCx, prevCz, probeCx, probeCz, builtStructures)) return true;
     }
     return false;
   };
@@ -796,18 +786,36 @@ renderer.setAnimationLoop(() => {
   resolveCircleObstacles(island.player.position, island.obstacles);
   clampPlayerToGround(island.player.position);
 
-  // pushPlayerOutOfRiver is intentionally NOT called: it expels the player
-  // toward the analytical riverCenterZ(x), which teleports them across the
-  // map when a player-dug pond exists outside the original river curve. With
-  // the MVP wading relaxation in `playerCanTraverse`, the player can walk
-  // through water freely, so expelling them is unnecessary and broken. Step 9
-  // (bridges) restores strict water blocking + a grid-aware push.
-  // pushPlayerOutOfRiver(island.player.position);
+  // pushPlayerOutOfRiver is intentionally NOT called: with strict
+  // isTraversable + bridge connectivity (Step 9.3) the player cannot enter a
+  // FRESHWATER cell unless the bridge structure spans both cells, so there
+  // is nothing to push them out of. Soft-locking by terraforming water under
+  // their feet is prevented by the player-overlap check in raise/dig tools.
 
-  const targetY = getPlayerStandingHeight(
+  let targetY = getPlayerStandingHeight(
     island.player.position.x,
     island.player.position.z,
   );
+  // Step 9.3 Y override: when the player's cell sits inside a bridge's
+  // occupiedCells, ignore the FRESHWATER bed Y reported by the heightmap and
+  // use the bridge deck Y (= LAND tier top of the placement-locked endpoint).
+  // Same-tier endpoints are guaranteed by canPlaceBridge, so any cell in
+  // occupiedCells shares that tier — sampling originCell is canonical.
+  const [pCx, pCz] = terrainGrid.worldToCell(
+    island.player.position.x,
+    island.player.position.z,
+  );
+  for (const s of builtStructures) {
+    if (s.kind !== 'bridge') continue;
+    let onDeck = false;
+    for (const [bx, bz] of s.occupiedCells) {
+      if (bx === pCx && bz === pCz) { onDeck = true; break; }
+    }
+    if (onDeck) {
+      targetY = terrainGrid.cellHeight(s.originCell[0], s.originCell[1]);
+      break;
+    }
+  }
   const yBlend = 1 - Math.exp(-params.playerVerticalLag * delta);
   island.player.position.y = THREE.MathUtils.lerp(island.player.position.y, targetY, yBlend);
 
