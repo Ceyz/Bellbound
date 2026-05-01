@@ -41,10 +41,17 @@ export interface BuildModeState {
  * A registered terraforming or placement tool. The shell calls `apply(cx, cz)`
  * on click; tools return `null` on success or an error reason string for the
  * status bar to display. `canApply` drives the cursor green/red preview.
+ *
+ * `supportsDrag` controls whether a press-and-drag pointermove keeps applying
+ * the tool to each new cell the cursor crosses. Default `true` for the paint
+ * pattern (cliffs, water, paths). Set to `false` for one-shot placement tools
+ * (bridges, staircases) where dragging would scatter multiple structures
+ * along the bank with no undo path.
  */
 export interface TerraformTool {
   kind: BuildKind;
   label: string;
+  supportsDrag?: boolean;
   canApply(cx: number, cz: number): boolean;
   apply(cx: number, cz: number): string | null;
 }
@@ -227,6 +234,19 @@ export class BuildMode {
     if (!this.cursor?.visible) return null;
     if (this.cursorCell[0] < 0 || this.cursorCell[1] < 0) return null;
     return [this.cursorCell[0], this.cursorCell[1]];
+  }
+
+  /**
+   * Whether the active tool participates in press-and-drag application. Used
+   * by main.ts's drag loop to short-circuit pointermove for one-shot tools
+   * (bridge / staircase placement). Returns false when no tool is active.
+   * Default for tools without an explicit flag is `true` (paint pattern).
+   */
+  currentToolSupportsDrag(): boolean {
+    if (!this.kind) return false;
+    const tool = this.tools.get(this.kind);
+    if (!tool) return false;
+    return tool.supportsDrag !== false;
   }
 
   /** Subscribe to mode changes. Returns unsub. */

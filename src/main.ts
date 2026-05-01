@@ -8,7 +8,7 @@ import {
 } from './scene/heightmap';
 import { GRID_D, GRID_W, Surface, TERRAIN_ORIGIN, Tier, getTerrainGrid } from './scene/terrain/TerrainGrid';
 import { bootTerrain, type IslandMintTerrainFields } from './scene/terrain/terrainSave';
-import { addBuiltStructure, bootBuiltStructures, getBuiltStructures, type BuiltStructure } from './scene/terrain/builtStructure';
+import { addBuiltStructure, bootBuiltStructures, canEditCellUnderStructures, getBuiltStructures, type BuiltStructure } from './scene/terrain/builtStructure';
 import { findBridgePlacement } from './scene/terrain/bridgePlacement';
 import { syncBridgeMeshes } from './scene/bridgeMeshes';
 import { sampleIslandShape } from './scene/islandShape';
@@ -370,6 +370,30 @@ function trackUndo(tool: TerraformTool): TerraformTool {
     },
   };
 }
+
+/**
+ * Step 9.5 fix: gate every terraforming tool with `canEditCellUnderStructures`.
+ * A bridge endpoint must not be raised/lowered, an interior cell of a bridge
+ * must not have its water filled, and no cell of a structure's footprint can
+ * be path-painted — otherwise the bridge mesh, movement connectors, and
+ * terrain bytes diverge. Both `canApply` (cursor preview) AND `apply` (click)
+ * are gated so a stale cursor frame can't slip an edit through.
+ */
+function gateByStructureBlock(tool: TerraformTool): TerraformTool {
+  const originalCan = tool.canApply;
+  const originalApply = tool.apply;
+  return {
+    ...tool,
+    canApply(cx, cz) {
+      if (!canEditCellUnderStructures(cx, cz, getBuiltStructures())) return false;
+      return originalCan.call(tool, cx, cz);
+    },
+    apply(cx, cz) {
+      if (!canEditCellUnderStructures(cx, cz, getBuiltStructures())) return 'blocked_by_structure';
+      return originalApply.call(tool, cx, cz);
+    },
+  };
+}
 function commitStroke(): void {
   if (!currentStroke) return;
   if (currentStroke.length > 0) {
@@ -426,7 +450,7 @@ function playerOverlapsCell(cx: number, cz: number): boolean {
   return dx * dx + dz * dz < r * r;
 }
 
-buildMode.registerTool(trackUndo({
+buildMode.registerTool(gateByStructureBlock(trackUndo({
   kind: 'cliff_raise',
   label: 'Élever falaise',
   canApply: (cx, cz) => {
@@ -447,9 +471,9 @@ buildMode.registerTool(trackUndo({
     spawnFxAtCell(cx, cz, 'cliff');
     return null;
   },
-}));
+})));
 
-buildMode.registerTool(trackUndo({
+buildMode.registerTool(gateByStructureBlock(trackUndo({
   kind: 'cliff_lower',
   label: 'Abaisser falaise',
   canApply: (cx, cz) => {
@@ -475,9 +499,9 @@ buildMode.registerTool(trackUndo({
     spawnFxAtCell(cx, cz, 'cliff');
     return null;
   },
-}));
+})));
 
-buildMode.registerTool(trackUndo({
+buildMode.registerTool(gateByStructureBlock(trackUndo({
   kind: 'water_dig',
   label: 'Creuser eau',
   canApply: (cx, cz) => {
@@ -500,9 +524,9 @@ buildMode.registerTool(trackUndo({
     spawnFxAtCell(cx, cz, 'water');
     return null;
   },
-}));
+})));
 
-buildMode.registerTool(trackUndo({
+buildMode.registerTool(gateByStructureBlock(trackUndo({
   kind: 'water_fill',
   label: 'Boucher eau',
   canApply: (cx, cz) => {
@@ -516,7 +540,7 @@ buildMode.registerTool(trackUndo({
     spawnFxAtCell(cx, cz, 'water');
     return null;
   },
-}));
+})));
 
 // Path tools (Step 7). 4-style MVP: dirt / stone / brick / planks. Each tool
 // is a thin wrapper around `paintPath` with a different style index — the
@@ -534,7 +558,7 @@ const PATH_STYLES = [
   { kind: 'path_paint_planks', label: 'Chemin bois',   style: 4, tint: 0xc89150 },
 ] as const;
 for (const { kind, label, style, tint } of PATH_STYLES) {
-  buildMode.registerTool(trackUndo({
+  buildMode.registerTool(gateByStructureBlock(trackUndo({
     kind,
     label,
     canApply: (cx, cz) => {
@@ -552,10 +576,10 @@ for (const { kind, label, style, tint } of PATH_STYLES) {
       spawnFxAtCell(cx, cz, 'path', tint);
       return null;
     },
-  }));
+  })));
 }
 
-buildMode.registerTool(trackUndo({
+buildMode.registerTool(gateByStructureBlock(trackUndo({
   kind: 'path_erase',
   label: 'Effacer chemin',
   canApply: (cx, cz) => {
@@ -570,7 +594,7 @@ buildMode.registerTool(trackUndo({
     spawnFxAtCell(cx, cz, 'path', 0xd4b08a);
     return null;
   },
-}));
+})));
 
 // Step 9.2: bridge placement tool. The cursor anchors at the LAND start cell;
 // `findBridgePlacement` auto-picks the first cardinal rotation that produces
@@ -583,6 +607,10 @@ buildMode.registerTool(trackUndo({
 buildMode.registerTool({
   kind: 'bridge_place',
   label: 'Pont',
+  // One-shot placement: a bridge spans 3-8 cells per click. Drag-paint would
+  // scatter several bridges along the bank with no remove-tool to undo them
+  // (Step 9.5+ adds remove + structure undo).
+  supportsDrag: false,
   canApply: (cx, cz) => {
     return findBridgePlacement(terraformGrid, getBuiltStructures(), cx, cz) !== null;
   },
@@ -662,6 +690,10 @@ let lastPaintedCell: [number, number] | null = null;
 sceneCanvas.addEventListener('pointermove', (event) => {
   buildMode.setPointer(event.clientX, event.clientY, sceneCanvas);
   if (!isPainting || !buildMode.isActive()) return;
+  // Drag-paint is for terrain/path brushes only. Placement tools opt out via
+  // `supportsDrag: false` so a click-drag along the river bank doesn't scatter
+  // multiple bridges in one stroke (no undo for structures yet — Step 9.5+).
+  if (!buildMode.currentToolSupportsDrag()) return;
   buildMode.update(island.camera);
   const cell = buildMode.getCursorCell();
   if (!cell) return;
