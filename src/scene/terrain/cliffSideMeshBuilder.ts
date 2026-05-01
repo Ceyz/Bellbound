@@ -39,11 +39,18 @@ export function buildCliffSideMesh(
   const wallMaterial = new THREE.MeshStandardMaterial({
     map: textures.cliffSide,
     roughness: 0.94,
+    // DoubleSide is REQUIRED for river bank walls: each wall's normal points
+    // from the FRESHWATER cell toward the adjacent LAND cell. Looking at the
+    // far bank from across the river, the wall normal points AWAY from the
+    // camera (toward LAND further from camera), so the front face is on the
+    // camera-far side. With FrontSide rendering the far-bank wall is culled
+    // → camera sees water plane through the cell-boundary gap → blue slivers
+    // along the far bank. DoubleSide draws both faces so the wall reads from
+    // either side of the river. See memory/structure_gotchas.md.
+    side: THREE.DoubleSide,
     // polygonOffset biases the wall's depth aggressively toward the camera so
     // it wins sub-pixel ties at the LAND/FRESHWATER seam (the line where the
-    // wall meets both the water plane below and the LAND quad above). The
-    // initial -1/-1 wasn't enough on certain oblique camera angles — bumped to
-    // -4/-4 to be robust. See memory/structure_gotchas.md.
+    // wall meets both the water plane below and the LAND quad above).
     polygonOffset: true,
     polygonOffsetFactor: -4,
     polygonOffsetUnits: -4,
