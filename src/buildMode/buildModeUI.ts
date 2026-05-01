@@ -377,6 +377,23 @@ function renderItemVisual(kind: BuildKind): string {
           <line x1="30" y1="22" x2="30" y2="30" stroke="#5e3f1f" stroke-width="1.2"/>
           <line x1="38" y1="22" x2="38" y2="30" stroke="#5e3f1f" stroke-width="1.2"/>
         </svg>`;
+    case 'staircase_place':
+      // Two-step silhouette rising left-to-right between two LAND ledges.
+      return `
+        <svg viewBox="0 0 48 48" width="46" height="46" aria-hidden="true">
+          <rect x="2" y="36" width="10" height="8" fill="#a8d2a4" stroke="#5a7e58" stroke-width="1.5"/>
+          <rect x="36" y="14" width="10" height="30" fill="#a8d2a4" stroke="#5a7e58" stroke-width="1.5"/>
+          <rect x="12" y="28" width="12" height="16" fill="#9a9a9a" stroke="#5a5a5a" stroke-width="1.5"/>
+          <rect x="24" y="20" width="12" height="24" fill="#9a9a9a" stroke="#5a5a5a" stroke-width="1.5"/>
+        </svg>`;
+    case 'incline_place':
+      // Single sloped wedge between two LAND ledges.
+      return `
+        <svg viewBox="0 0 48 48" width="46" height="46" aria-hidden="true">
+          <rect x="2" y="36" width="10" height="8" fill="#a8d2a4" stroke="#5a7e58" stroke-width="1.5"/>
+          <rect x="36" y="14" width="10" height="30" fill="#a8d2a4" stroke="#5a7e58" stroke-width="1.5"/>
+          <path d="M12 44 L36 44 L36 14 Z" fill="#b88a55" stroke="#7a5a30" stroke-width="1.8" stroke-linejoin="round"/>
+        </svg>`;
     default:
       return `
         <svg viewBox="0 0 48 48" width="46" height="46" aria-hidden="true">
@@ -690,7 +707,9 @@ function injectStyles() {
     .build-item-circle-cliff_lower { background: #e3a866; }  /* warm earth    */
     .build-item-circle-water_dig   { background: #7ab9d4; }  /* lake blue     */
     .build-item-circle-water_fill  { background: #b3dde6; }  /* shallow blue  */
-    .build-item-circle-bridge_place { background: #d8b990; }  /* warm wood     */
+    .build-item-circle-bridge_place    { background: #d8b990; }  /* warm wood   */
+    .build-item-circle-staircase_place { background: #c9c9c9; }  /* cool stone  */
+    .build-item-circle-incline_place   { background: #d6b48a; }  /* tan ramp    */
 
     .build-item-label {
       font-size: 11px;

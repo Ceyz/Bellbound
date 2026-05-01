@@ -8,9 +8,10 @@ import {
 } from './scene/heightmap';
 import { GRID_D, GRID_W, Surface, TERRAIN_ORIGIN, Tier, getTerrainGrid } from './scene/terrain/TerrainGrid';
 import { bootTerrain, type IslandMintTerrainFields } from './scene/terrain/terrainSave';
-import { addBuiltStructure, bootBuiltStructures, canEditCellUnderStructures, getBuiltStructures, type BuiltStructure } from './scene/terrain/builtStructure';
+import { addBuiltStructure, bootBuiltStructures, canEditCellUnderStructures, forwardOf, getBuiltStructures, type BuiltStructure } from './scene/terrain/builtStructure';
 import { findBridgePlacement } from './scene/terrain/bridgePlacement';
-import { syncBridgeMeshes } from './scene/bridgeMeshes';
+import { findTieredPlacement } from './scene/terrain/tieredPlacement';
+import { syncStructureMeshes } from './scene/structureMeshes';
 import { sampleIslandShape } from './scene/islandShape';
 import {
   initTerraformFx,
@@ -86,6 +87,13 @@ declare global {
      * tool uses.
      */
     __BELLBOUND_DEBUG_PLACE_BRIDGE__?: (cx: number, cz: number) => string | null;
+    /**
+     * Dev-only hook: place a staircase or incline anchored at (cx, cz),
+     * mirroring `__BELLBOUND_DEBUG_PLACE_BRIDGE__` for tiered structures.
+     * Returns the placed structure id, or null if no rotation produces a
+     * valid LAND tier T → LAND tier T+1 connection.
+     */
+    __BELLBOUND_DEBUG_PLACE_TIERED__?: (cx: number, cz: number, kind: 'staircase' | 'incline') => string | null;
   }
 }
 
@@ -284,26 +292,34 @@ mountBuildModeUI(buildMode);
 
 const terraformGrid = getTerrainGrid();
 
-// Step 9.2: bridge deck meshes. One Group child per placed bridge, rebuilt
-// on every placement / removal. Initial sync covers any structures the boot
-// path loaded from `island_save.state.built_structures`.
-const bridgeMeshGroup = new THREE.Group();
-bridgeMeshGroup.name = 'bridge-meshes';
-island.scene.add(bridgeMeshGroup);
-function rebuildBridgeMeshes(): void {
-  syncBridgeMeshes(bridgeMeshGroup, getBuiltStructures(), (cx, cz) => {
+// Step 9.2 / 9.4: built-structure meshes. One Group child per placed bridge,
+// staircase, or incline; rebuilt on every placement / removal. Initial sync
+// covers any structures the boot path loaded from `state.built_structures`.
+const structureMeshGroup = new THREE.Group();
+structureMeshGroup.name = 'structure-meshes';
+island.scene.add(structureMeshGroup);
+function rebuildStructureMeshes(): void {
+  syncStructureMeshes(structureMeshGroup, getBuiltStructures(), (cx, cz) => {
     return terraformGrid.cellHeight(cx, cz);
   });
 }
-rebuildBridgeMeshes();
+rebuildStructureMeshes();
 if (import.meta.env.DEV) {
-  window.__BELLBOUND_DEBUG_REBUILD_BRIDGES__ = rebuildBridgeMeshes;
+  window.__BELLBOUND_DEBUG_REBUILD_BRIDGES__ = rebuildStructureMeshes;
   window.__BELLBOUND_DEBUG_PLACE_BRIDGE__ = (cx: number, cz: number) => {
     const placement = findBridgePlacement(terraformGrid, getBuiltStructures(), cx, cz);
     if (!placement) return null;
     const result = addBuiltStructure(placement.serialized, GRID_W, GRID_D);
     if (!result.structure) return null;
-    rebuildBridgeMeshes();
+    rebuildStructureMeshes();
+    return result.structure.id;
+  };
+  window.__BELLBOUND_DEBUG_PLACE_TIERED__ = (cx: number, cz: number, kind: 'staircase' | 'incline') => {
+    const placement = findTieredPlacement(terraformGrid, getBuiltStructures(), cx, cz, kind);
+    if (!placement) return null;
+    const result = addBuiltStructure(placement.serialized, GRID_W, GRID_D);
+    if (!result.structure) return null;
+    rebuildStructureMeshes();
     return result.structure.id;
   };
 }
@@ -619,10 +635,35 @@ buildMode.registerTool({
     if (!placement) return 'no_valid_placement';
     const result = addBuiltStructure(placement.serialized, GRID_W, GRID_D);
     if (!result.structure) return result.errors[0] ?? 'add_structure_failed';
-    rebuildBridgeMeshes();
+    rebuildStructureMeshes();
     return null;
   },
 });
+
+// Step 9.4: tiered placement (staircase / incline). Same anchor convention as
+// bridges — cursor anchors at the *lower-tier* LAND cell; auto-rotation finds
+// the cardinal direction whose forward neighbour is one tier higher LAND.
+// supportsDrag stays false for the same reason as bridges (no remove flow yet).
+function registerTieredTool(kind: 'staircase' | 'incline', label: string): void {
+  buildMode.registerTool({
+    kind: `${kind}_place`,
+    label,
+    supportsDrag: false,
+    canApply: (cx, cz) => {
+      return findTieredPlacement(terraformGrid, getBuiltStructures(), cx, cz, kind) !== null;
+    },
+    apply: (cx, cz) => {
+      const placement = findTieredPlacement(terraformGrid, getBuiltStructures(), cx, cz, kind);
+      if (!placement) return 'no_valid_placement';
+      const result = addBuiltStructure(placement.serialized, GRID_W, GRID_D);
+      if (!result.structure) return result.errors[0] ?? 'add_structure_failed';
+      rebuildStructureMeshes();
+      return null;
+    },
+  });
+}
+registerTieredTool('staircase', 'Escalier');
+registerTieredTool('incline', 'Pente');
 
 /**
  * Spawn the post-edit visual feedback at the cell's current top. Called
@@ -828,25 +869,36 @@ renderer.setAnimationLoop(() => {
     island.player.position.x,
     island.player.position.z,
   );
-  // Step 9.3 Y override: when the player's cell sits inside a bridge's
-  // occupiedCells, ignore the FRESHWATER bed Y reported by the heightmap and
-  // use the bridge deck Y (= LAND tier top of the placement-locked endpoint).
-  // Same-tier endpoints are guaranteed by canPlaceBridge, so any cell in
-  // occupiedCells shares that tier — sampling originCell is canonical.
+  // Step 9.3 / 9.4 Y override: when the player's cell sits inside a built
+  // structure's occupiedCells, override the heightmap Y so the player rides
+  // the structure rather than the underlying terrain.
+  //   - bridge:                 Y = LAND tier top of the (same-tier) endpoint.
+  //   - staircase / incline:    Y = upper-tier top — the player snaps onto
+  //                             the top of the ramp / steps as soon as they
+  //                             enter the lower cell. With the existing
+  //                             vertical-lag lerp this reads as a smooth ~80 ms
+  //                             ascent rather than a teleport. Per-cell ramp
+  //                             interpolation lands in a polish pass.
   const [pCx, pCz] = terrainGrid.worldToCell(
     island.player.position.x,
     island.player.position.z,
   );
   for (const s of builtStructures) {
-    if (s.kind !== 'bridge') continue;
-    let onDeck = false;
+    let onStructure = false;
     for (const [bx, bz] of s.occupiedCells) {
-      if (bx === pCx && bz === pCz) { onDeck = true; break; }
+      if (bx === pCx && bz === pCz) { onStructure = true; break; }
     }
-    if (onDeck) {
+    if (!onStructure) continue;
+    if (s.kind === 'bridge') {
       targetY = terrainGrid.cellHeight(s.originCell[0], s.originCell[1]);
-      break;
+    } else if (s.kind === 'staircase' || s.kind === 'incline') {
+      // Upper end is at originCell + forward (placement enforces +1 tier).
+      const [fx, fz] = forwardOf(s.rotation);
+      const upperCx = s.originCell[0] + fx;
+      const upperCz = s.originCell[1] + fz;
+      targetY = terrainGrid.cellHeight(upperCx, upperCz);
     }
+    break;
   }
   const yBlend = 1 - Math.exp(-params.playerVerticalLag * delta);
   island.player.position.y = THREE.MathUtils.lerp(island.player.position.y, targetY, yBlend);
