@@ -36,26 +36,32 @@ export function buildCliffSideMesh(
   const group = new THREE.Group();
   group.name = 'cliff-side-walls';
 
-  const wallMaterial = new THREE.MeshStandardMaterial({
+  // LAND-LAND walls (real cliffs / player-raised plateaus): stratified rock
+  // texture, sub-pixel bleed at edges + corners to hide rasteriser ties.
+  const cliffWallMaterial = new THREE.MeshStandardMaterial({
     map: textures.cliffSide,
     roughness: 0.94,
-    // DoubleSide is REQUIRED for river bank walls: each wall's normal points
-    // from the FRESHWATER cell toward the adjacent LAND cell. Looking at the
-    // far bank from across the river, the wall normal points AWAY from the
-    // camera (toward LAND further from camera), so the front face is on the
-    // camera-far side. With FrontSide rendering the far-bank wall is culled
-    // → camera sees water plane through the cell-boundary gap → blue slivers
-    // along the far bank. DoubleSide draws both faces so the wall reads from
-    // either side of the river. See memory/structure_gotchas.md.
     side: THREE.DoubleSide,
-    // polygonOffset biases the wall's depth aggressively toward the camera so
-    // it wins sub-pixel ties at the LAND/FRESHWATER seam (the line where the
-    // wall meets both the water plane below and the LAND quad above).
     polygonOffset: true,
     polygonOffsetFactor: -4,
     polygonOffsetUnits: -4,
   });
-  wallMaterial.name = 'cliff-side-material';
+  cliffWallMaterial.name = 'cliff-wall-material';
+
+  // LAND-FRESHWATER walls (river / pond banks): wet-sand riverbed texture so
+  // the bank reads as natural earth instead of stratified rock. NO geometry
+  // bleed — the stair-stepped river outline turns the per-edge bleeds into
+  // visible "brown blades" overshooting at corners. Sub-pixel seams are
+  // covered by the polygonOffset biasing alone.
+  const riverBankMaterial = new THREE.MeshStandardMaterial({
+    map: textures.riverbed,
+    roughness: 0.92,
+    side: THREE.DoubleSide,
+    polygonOffset: true,
+    polygonOffsetFactor: -4,
+    polygonOffsetUnits: -4,
+  });
+  riverBankMaterial.name = 'river-bank-material';
 
   const lipMaterial = new THREE.MeshStandardMaterial({
     map: textures.cliffTop,
@@ -63,33 +69,40 @@ export function buildCliffSideMesh(
   });
   lipMaterial.name = 'cliff-side-lip-material';
 
-  const wallGeometries: THREE.BufferGeometry[] = [];
+  const cliffGeometries: THREE.BufferGeometry[] = [];
+  const riverBankGeometries: THREE.BufferGeometry[] = [];
   const lipGeometries: THREE.BufferGeometry[] = [];
 
   grid.forEachTierDiscontinuity((lowerCx, lowerCz, upperCx, upperCz, dx, dz, drop) => {
     const lowerCell = grid.getCell(lowerCx, lowerCz);
     const isWaterBank = lowerCell.surface === 3 /* FRESHWATER */;
 
-    // Wall restored on FW edges so the 30 cm drop reads as a visible "creux"
-    // (the previous fix that removed walls made the bank look flat from a
-    // 3rd-person angle). With freshwater material now fully opaque the bed
-    // beneath no longer bleeds through, so the wall renders cleanly without
-    // the brown ribbon artefact the user originally complained about. Lips
-    // still suppressed for FW edges — the grass-curl decoration belongs to
-    // real cliff plateaus, not river banks.
-    const wallGeometry = buildWallQuadGeometry(grid, lowerCx, lowerCz, dx, dz, drop);
-    wallGeometries.push(wallGeometry);
-
-    if (!isWaterBank) {
-      const lipGeometry = buildLipQuadGeometry(grid, upperCx, upperCz, dx, dz);
-      lipGeometries.push(lipGeometry);
+    // Bleeds (both EDGE_BLEED in perpendicular and VERTICAL_BLEED at top +
+    // bottom) only on cliffs. River banks ship without bleeds because the
+    // stair-stepped LAND-FW outline would otherwise expose the bleed as a
+    // small overshooting "brown blade" at every zigzag corner.
+    const wallGeometry = buildWallQuadGeometry(grid, lowerCx, lowerCz, dx, dz, drop, !isWaterBank);
+    if (isWaterBank) {
+      riverBankGeometries.push(wallGeometry);
+    } else {
+      cliffGeometries.push(wallGeometry);
+      lipGeometries.push(buildLipQuadGeometry(grid, upperCx, upperCz, dx, dz));
     }
   });
 
-  if (wallGeometries.length > 0) {
-    const merged = mergeBufferGeometries(wallGeometries);
-    const mesh = new THREE.Mesh(merged, wallMaterial);
+  if (cliffGeometries.length > 0) {
+    const merged = mergeBufferGeometries(cliffGeometries);
+    const mesh = new THREE.Mesh(merged, cliffWallMaterial);
     mesh.name = 'cliff-walls';
+    mesh.castShadow = false;
+    mesh.receiveShadow = true;
+    group.add(mesh);
+  }
+
+  if (riverBankGeometries.length > 0) {
+    const merged = mergeBufferGeometries(riverBankGeometries);
+    const mesh = new THREE.Mesh(merged, riverBankMaterial);
+    mesh.name = 'river-bank-walls';
     mesh.castShadow = false;
     mesh.receiveShadow = true;
     group.add(mesh);
@@ -119,16 +132,13 @@ function buildWallQuadGeometry(
   dx: number,
   dz: number,
   drop: number,
+  withBleed: boolean,
 ): THREE.BufferGeometry {
-  // Vertical bleed at top + bottom: pokes the wall a few mm above the LAND
-  // tier top and below the FRESHWATER bed. Fills the sub-pixel hairline at
-  // the LAND/wall corner that lets the water plane below show through as
-  // blue slivers along the bank — top is the only place the user can
-  // actually see this artefact (LAND quad ends at y=upperY exactly, wall
-  // top at y=upperY exactly → tied at the line). The brown poke above LAND
-  // is a much smaller artefact than the blue sliver and reads as part of
-  // the bank.
-  const VERTICAL_BLEED = 0.006;
+  // Vertical bleed at top + bottom only when `withBleed` is set — used by
+  // LAND-LAND cliffs to fill the sub-pixel hairline at the LAND/wall corner.
+  // River banks pass `withBleed: false` because the bleed would protrude
+  // visibly at every zigzag corner along the stair-stepped river outline.
+  const VERTICAL_BLEED = withBleed ? 0.006 : 0;
   const lowerY = grid.cellHeight(lowerCx, lowerCz) - VERTICAL_BLEED;
   const upperY = grid.cellHeight(lowerCx, lowerCz) + drop + VERTICAL_BLEED;
 
@@ -148,12 +158,10 @@ function buildWallQuadGeometry(
   let p0x: number, p0z: number, p1x: number, p1z: number;
   let normal: [number, number, number];
 
-  // Inflate the wall's perpendicular extent by `EDGE_BLEED` so adjacent walls
-  // overlap by sub-pixel at corners. Without it, two walls meeting at a 90°
-  // corner can leave a hair-line gap that reads as a thin blue/water sliver
-  // on certain camera angles. The bleed is in the direction perpendicular to
-  // the wall's edge axis, never along (dx, dz) itself.
-  const EDGE_BLEED = 0.005;
+  // EDGE_BLEED only on cliffs (withBleed). River banks must NOT bleed — the
+  // stair-stepped LAND/FW outline turns the perpendicular bleed into visible
+  // overshooting "brown blades" at zigzag corners.
+  const EDGE_BLEED = withBleed ? 0.005 : 0;
 
   if (dx === 1) {
     // east edge of lower; wall faces +X (toward upper cell). Bleed along z.
