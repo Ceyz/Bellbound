@@ -70,19 +70,20 @@ export function buildCliffSideMesh(
     const lowerCell = grid.getCell(lowerCx, lowerCz);
     const isWaterBank = lowerCell.surface === 3 /* FRESHWATER */;
 
-    // Skip walls AND lips for water banks per user request: a brown stratified
-    // bank visibly exposed 30 cm above water reads as glitch / clutter rather
-    // than the AC canyon look it was meant to evoke. With the wall removed,
-    // the LAND quad ends at the cell boundary and the water surface sits 30 cm
-    // below it; the camera reads this as a clean grass-to-water transition.
-    // Walls are still emitted for LAND-LAND tier drops (real cliffs).
-    if (isWaterBank) return;
-
+    // Wall restored on FW edges so the 30 cm drop reads as a visible "creux"
+    // (the previous fix that removed walls made the bank look flat from a
+    // 3rd-person angle). With freshwater material now fully opaque the bed
+    // beneath no longer bleeds through, so the wall renders cleanly without
+    // the brown ribbon artefact the user originally complained about. Lips
+    // still suppressed for FW edges — the grass-curl decoration belongs to
+    // real cliff plateaus, not river banks.
     const wallGeometry = buildWallQuadGeometry(grid, lowerCx, lowerCz, dx, dz, drop);
     wallGeometries.push(wallGeometry);
 
-    const lipGeometry = buildLipQuadGeometry(grid, upperCx, upperCz, dx, dz);
-    lipGeometries.push(lipGeometry);
+    if (!isWaterBank) {
+      const lipGeometry = buildLipQuadGeometry(grid, upperCx, upperCz, dx, dz);
+      lipGeometries.push(lipGeometry);
+    }
   });
 
   if (wallGeometries.length > 0) {
