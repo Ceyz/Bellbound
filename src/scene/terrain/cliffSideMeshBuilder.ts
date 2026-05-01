@@ -39,6 +39,16 @@ export function buildCliffSideMesh(
   const wallMaterial = new THREE.MeshStandardMaterial({
     map: textures.cliffSide,
     roughness: 0.94,
+    // polygonOffset biases the wall's depth slightly toward the camera so it
+    // always wins sub-pixel comparisons at the LAND/FRESHWATER seam where the
+    // wall meets the water surface plane and the LAND quad. Without this, the
+    // freshwater plane (at y = tierTop - 0.30) and the wall both have edges
+    // along the same line at the cell boundary, and the rasterizer ties show
+    // through as thin blue slivers between grass and water on certain camera
+    // angles. See memory/structure_gotchas.md.
+    polygonOffset: true,
+    polygonOffsetFactor: -1,
+    polygonOffsetUnits: -1,
   });
   wallMaterial.name = 'cliff-side-material';
 
@@ -122,21 +132,28 @@ function buildWallQuadGeometry(
   let p0x: number, p0z: number, p1x: number, p1z: number;
   let normal: [number, number, number];
 
+  // Inflate the wall's perpendicular extent by `EDGE_BLEED` so adjacent walls
+  // overlap by sub-pixel at corners. Without it, two walls meeting at a 90°
+  // corner can leave a hair-line gap that reads as a thin blue/water sliver
+  // on certain camera angles. The bleed is in the direction perpendicular to
+  // the wall's edge axis, never along (dx, dz) itself.
+  const EDGE_BLEED = 0.005;
+
   if (dx === 1) {
-    // east edge of lower; wall faces +X (toward upper cell)
-    p0x = x1; p0z = z0; p1x = x1; p1z = z1;
+    // east edge of lower; wall faces +X (toward upper cell). Bleed along z.
+    p0x = x1; p0z = z0 - EDGE_BLEED; p1x = x1; p1z = z1 + EDGE_BLEED;
     normal = [1, 0, 0];
   } else if (dx === -1) {
-    // west edge of lower; wall faces -X
-    p0x = x0; p0z = z1; p1x = x0; p1z = z0;
+    // west edge of lower; wall faces -X. Bleed along z.
+    p0x = x0; p0z = z1 + EDGE_BLEED; p1x = x0; p1z = z0 - EDGE_BLEED;
     normal = [-1, 0, 0];
   } else if (dz === 1) {
-    // north edge of lower; wall faces +Z
-    p0x = x1; p0z = z1; p1x = x0; p1z = z1;
+    // north edge of lower; wall faces +Z. Bleed along x.
+    p0x = x1 + EDGE_BLEED; p0z = z1; p1x = x0 - EDGE_BLEED; p1z = z1;
     normal = [0, 0, 1];
   } else {
-    // south edge of lower (dz === -1); wall faces -Z
-    p0x = x0; p0z = z0; p1x = x1; p1z = z0;
+    // south edge of lower (dz === -1); wall faces -Z. Bleed along x.
+    p0x = x0 - EDGE_BLEED; p0z = z0; p1x = x1 + EDGE_BLEED; p1z = z0;
     normal = [0, 0, -1];
   }
 
