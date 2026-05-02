@@ -93,8 +93,8 @@ describe('bridgePlacement — canPlaceBridge rejection cases', () => {
       kind: 'staircase',
       originCell: [11, 5],
       rotation: 0,
-      length: 2,
-      width: 1,
+      length: 5,
+      width: 2,
       style: 0,
     });
     const result = canPlaceBridge(grid, [existing], 10, 5, 0, BRIDGE_MIN_LENGTH);

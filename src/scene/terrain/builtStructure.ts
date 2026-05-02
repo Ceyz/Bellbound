@@ -25,11 +25,13 @@
  * Kind constraints
  * ----------------
  *
- *  - `staircase`: length=2, width=1. Single connector edge between origin and
- *    origin + forward, bridging a tier delta of ±1.
- *  - `incline`:   length∈[2..3], width=1. Same connector pattern; visually a
- *    ramp instead of stairs (Phase A.5 polish — both behave identically for
- *    the movement resolver).
+ *  - `staircase`: length=5, width=2. Cells [0..3] × [0..1] sit at LAND tier T
+ *    (the slope), cell [4] × [0..1] sits at LAND tier T+1 (the landing). The
+ *    4-cell slope gives ~19° pente at the v1 1.4 m tier height. Mesh is a
+ *    stepped silhouette over the slope cells; cell [4] is just LAND.
+ *  - `incline`:   length=5, width=2. Same footprint and tier contract as
+ *    staircase; the mesh is a sloped wedge instead of stairs. The two kinds
+ *    are mechanically identical for the movement resolver.
  *  - `bridge`:    length∈[2..8], width=1. One connector edge per interior
  *    cell pair along the forward axis (a 4-cell bridge has 3 connectors).
  *    Endpoints sit on same-tier LAND; the interior cells span FRESHWATER.
@@ -124,8 +126,8 @@ interface KindConstraints {
 }
 
 const KIND_CONSTRAINTS: Record<BuiltStructureKind, KindConstraints> = {
-  staircase: { minLength: 2, maxLength: 2, minWidth: 1, maxWidth: 1 },
-  incline:   { minLength: 2, maxLength: 3, minWidth: 1, maxWidth: 1 },
+  staircase: { minLength: 5, maxLength: 5, minWidth: 2, maxWidth: 2 },
+  incline:   { minLength: 5, maxLength: 5, minWidth: 2, maxWidth: 2 },
   bridge:    { minLength: 2, maxLength: 8, minWidth: 1, maxWidth: 1 },
 };
 

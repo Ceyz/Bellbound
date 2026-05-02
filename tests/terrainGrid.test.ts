@@ -22,15 +22,16 @@ function testStruct(
   kind: BuiltStructureKind,
   originCell: [number, number],
   rotation: Rotation,
-  length = 2,
+  length?: number,
 ): BuiltStructure {
+  const isTiered = kind === 'staircase' || kind === 'incline';
   return deriveStructureGeometry({
     id: `test-${kind}-${originCell[0]}-${originCell[1]}-${rotation}`,
     kind,
     originCell,
     rotation,
-    length,
-    width: 1,
+    length: length ?? (isTiered ? 5 : 2),
+    width: isTiered ? 2 : 1,
     style: 0,
   });
 }

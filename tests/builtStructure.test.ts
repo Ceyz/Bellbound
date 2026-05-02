@@ -29,13 +29,14 @@ const D = GRID_D;
 function ser(
   partial: Partial<BuiltStructureSerialized> & Pick<BuiltStructureSerialized, 'kind' | 'originCell'>,
 ): BuiltStructureSerialized {
+  const isTiered = partial.kind === 'staircase' || partial.kind === 'incline';
   return {
     id: partial.id ?? `test-${partial.kind}-${partial.originCell[0]}-${partial.originCell[1]}`,
     kind: partial.kind,
     originCell: partial.originCell,
     rotation: partial.rotation ?? 0,
-    length: partial.length ?? 2,
-    width: partial.width ?? 1,
+    length: partial.length ?? (isTiered ? 5 : 2),
+    width: partial.width ?? (isTiered ? 2 : 1),
     style: partial.style ?? 0,
   };
 }
@@ -64,27 +65,53 @@ describe('builtStructure — forwardOf / rightOf', () => {
 // ─── deriveStructureGeometry ───────────────────────────────────────────
 
 describe('builtStructure — deriveStructureGeometry', () => {
-  it('1×2 staircase rotation 0 occupies origin and origin+(1,0)', () => {
+  it('5×2 staircase rotation 0 spans origin..origin+(4,0) and lane origin+(0,-1)..origin+(4,-1)', () => {
     const s = deriveStructureGeometry(ser({ kind: 'staircase', originCell: [10, 20] }));
-    expect(s.occupiedCells).toEqual([[10, 20], [11, 20]]);
-    expect(s.connectorEdges).toHaveLength(1);
+    // forwardOf(0) = (1, 0), rightOf(0) = (0, -1). Iteration is i outer, j inner.
+    expect(s.occupiedCells).toEqual([
+      [10, 20], [10, 19],
+      [11, 20], [11, 19],
+      [12, 20], [12, 19],
+      [13, 20], [13, 19],
+      [14, 20], [14, 19],
+    ]);
+    // 4 connectors per lane × 2 lanes = 8 (uniform per-pair generation).
+    expect(s.connectorEdges).toHaveLength(8);
     expect(s.connectorEdges[0]).toEqual({ a: [10, 20], b: [11, 20] });
   });
 
-  it('1×2 staircase rotation 90 occupies origin and origin+(0,1)', () => {
+  it('5×2 staircase rotation 90 spans origin..origin+(0,4) and lane origin+(1,0)..origin+(1,4)', () => {
     const s = deriveStructureGeometry(ser({ kind: 'staircase', originCell: [10, 20], rotation: 90 }));
-    expect(s.occupiedCells).toEqual([[10, 20], [10, 21]]);
+    expect(s.occupiedCells).toEqual([
+      [10, 20], [11, 20],
+      [10, 21], [11, 21],
+      [10, 22], [11, 22],
+      [10, 23], [11, 23],
+      [10, 24], [11, 24],
+    ]);
     expect(s.connectorEdges[0]).toEqual({ a: [10, 20], b: [10, 21] });
   });
 
-  it('1×2 staircase rotation 180 occupies origin and origin-(1,0)', () => {
+  it('5×2 staircase rotation 180 extends along -X with right axis along +Z', () => {
     const s = deriveStructureGeometry(ser({ kind: 'staircase', originCell: [10, 20], rotation: 180 }));
-    expect(s.occupiedCells).toEqual([[10, 20], [9, 20]]);
+    expect(s.occupiedCells).toEqual([
+      [10, 20], [10, 21],
+      [9, 20], [9, 21],
+      [8, 20], [8, 21],
+      [7, 20], [7, 21],
+      [6, 20], [6, 21],
+    ]);
   });
 
-  it('1×2 staircase rotation 270 occupies origin and origin-(0,1)', () => {
+  it('5×2 staircase rotation 270 extends along -Z with right axis along -X', () => {
     const s = deriveStructureGeometry(ser({ kind: 'staircase', originCell: [10, 20], rotation: 270 }));
-    expect(s.occupiedCells).toEqual([[10, 20], [10, 19]]);
+    expect(s.occupiedCells).toEqual([
+      [10, 20], [9, 20],
+      [10, 19], [9, 19],
+      [10, 18], [9, 18],
+      [10, 17], [9, 17],
+      [10, 16], [9, 16],
+    ]);
   });
 
   it('1×4 bridge rotation 0 occupies 4 cells with 3 connector edges', () => {
@@ -109,7 +136,7 @@ describe('builtStructure — deriveStructureGeometry', () => {
 
   it('throws on length out of range for kind', () => {
     expect(() =>
-      deriveStructureGeometry(ser({ kind: 'staircase', originCell: [0, 0], length: 3 })),
+      deriveStructureGeometry(ser({ kind: 'staircase', originCell: [0, 0], length: 4 })),
     ).toThrow(/length out of range/);
   });
 });
@@ -143,11 +170,20 @@ describe('builtStructure — validateStructure', () => {
     expect(validateStructure(s, W, D)[0]).toMatch(/length out of range/);
   });
 
-  it('reports invalid incline length (max 3)', () => {
+  it('reports invalid incline length (must be exactly 5)', () => {
     expect(validateStructure(ser({ kind: 'incline', originCell: [5, 5], length: 4 }), W, D)[0])
       .toMatch(/length out of range/);
-    expect(validateStructure(ser({ kind: 'incline', originCell: [5, 5], length: 3 }), W, D))
+    expect(validateStructure(ser({ kind: 'incline', originCell: [5, 5], length: 6 }), W, D)[0])
+      .toMatch(/length out of range/);
+    expect(validateStructure(ser({ kind: 'incline', originCell: [5, 5], length: 5 }), W, D))
       .toEqual([]);
+  });
+
+  it('reports invalid staircase/incline width (must be exactly 2)', () => {
+    expect(validateStructure(ser({ kind: 'staircase', originCell: [5, 5], width: 1 }), W, D)[0])
+      .toMatch(/width out of range/);
+    expect(validateStructure(ser({ kind: 'incline', originCell: [5, 5], width: 3 }), W, D)[0])
+      .toMatch(/width out of range/);
   });
 });
 

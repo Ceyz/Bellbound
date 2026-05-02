@@ -5,6 +5,7 @@ import {
 } from './terrain/TerrainGrid';
 import {
   forwardOf,
+  rightOf,
   type BuiltStructure,
 } from './terrain/builtStructure';
 import {
@@ -100,71 +101,59 @@ function buildBridgeMesh(
 }
 
 /**
- * Build a staircase: two stacked boxes filling the cliff face on the lower
- * cell. The lower step covers the front half (toward the lower-tier ground)
- * at half the tier delta; the upper step covers the back half (toward the
- * cliff plateau) at the full tier delta. Together they read as a 2-step
- * silhouette the player ascends. Origin at the lower-tier cell; placement
- * guarantees `tierUpper - tierLower == 1`.
+ * Build a staircase: a stepped silhouette over the slope cells [0..s.length-2]
+ * of the structure footprint. Each step occupies one slope cell along forward
+ * × the full structure width, and rises one stepHeight = (tierUpper - tierLower)
+ * / slopeLength higher than the previous one. Cell [s.length-1] is the
+ * landing (LAND at upper tier) — no mesh on it.
  */
 function buildStaircaseGroup(
   s: BuiltStructure,
   gridSampleTierTop: (cx: number, cz: number) => number,
 ): THREE.Group {
   const [fx, fz] = forwardOf(s.rotation);
+  const [rx, rz] = rightOf(s.rotation);
   const [originCx, originCz] = s.originCell;
+  const slopeLength = s.length - 1;
 
   const tierLower = gridSampleTierTop(originCx, originCz);
-  const tierUpper = gridSampleTierTop(originCx + fx, originCz + fz);
-  const height = Math.max(0.05, tierUpper - tierLower);
-  const halfHeight = height * 0.5;
+  const tierUpper = gridSampleTierTop(
+    originCx + fx * slopeLength,
+    originCz + fz * slopeLength,
+  );
+  const totalHeight = Math.max(0.05, tierUpper - tierLower);
+  const stepHeight = totalHeight / slopeLength;
 
-  // Cell-local center of the lower cell in world coords.
   const lowerWx = TERRAIN_ORIGIN.x + (originCx + 0.5) * CELL;
   const lowerWz = TERRAIN_ORIGIN.z + (originCz + 0.5) * CELL;
+  const widthMidJ = (s.width - 1) / 2;
 
   const group = new THREE.Group();
   group.name = `staircase-${s.id}`;
 
-  // Two box geometries — keep distinct so each step gets its own scale.
   const material = new THREE.MeshStandardMaterial({
     color: STAIRCASE_COLOR,
     roughness: 0.9,
     metalness: 0,
   });
 
-  const stepLength = CELL * 0.5;
-  const stepWidth = s.width * CELL;
-
-  // Step 1 (front, toward lower tier): half-height, front half of the lower cell.
-  const step1 = new THREE.Mesh(unitDeckGeometry(), material);
-  step1.scale.set(stepLength, halfHeight, stepWidth);
-  step1.position.set(
-    lowerWx - fx * (CELL * 0.25),
-    tierLower + halfHeight * 0.5,
-    lowerWz - fz * (CELL * 0.25),
-  );
-  step1.castShadow = true;
-  step1.receiveShadow = true;
-  step1.rotation.y = -((s.rotation * Math.PI) / 180);
-  group.add(step1);
-
-  // Step 2 (back, toward cliff): full-height, back half of the lower cell.
-  const step2 = new THREE.Mesh(unitDeckGeometry(), material);
-  step2.scale.set(stepLength, height, stepWidth);
-  step2.position.set(
-    lowerWx + fx * (CELL * 0.25),
-    tierLower + height * 0.5,
-    lowerWz + fz * (CELL * 0.25),
-  );
-  step2.castShadow = true;
-  step2.receiveShadow = true;
-  step2.rotation.y = -((s.rotation * Math.PI) / 180);
-  group.add(step2);
+  for (let i = 0; i < slopeLength; i += 1) {
+    const stepBoxHeight = (i + 1) * stepHeight;
+    const cellCenterWx = lowerWx + fx * i + rx * widthMidJ;
+    const cellCenterWz = lowerWz + fz * i + rz * widthMidJ;
+    const step = new THREE.Mesh(unitDeckGeometry(), material);
+    step.scale.set(CELL, stepBoxHeight, s.width * CELL);
+    step.position.set(cellCenterWx, tierLower + stepBoxHeight * 0.5, cellCenterWz);
+    // castShadow disabled — the rolling-world warp isn't applied to the
+    // depth pass. See memory/structure_gotchas.md.
+    step.castShadow = false;
+    step.receiveShadow = true;
+    step.rotation.y = -((s.rotation * Math.PI) / 180);
+    group.add(step);
+    disableFrustumCullingForRolling(step);
+  }
 
   applyRollingShaderTo(material);
-  disableFrustumCullingForRolling(step1);
-  disableFrustumCullingForRolling(step2);
   return group;
 }
 
@@ -212,24 +201,35 @@ function unitWedgeGeometry(): THREE.BufferGeometry {
 }
 
 /**
- * Build an incline: a sloped wedge anchored at the lower-tier cell, filling
- * the gap between LAND tier T and LAND tier T+1. The slope's top edge is
- * flush with the upper tier so the player's vertical-lag lerp reads as a
- * smooth ramp rather than a teleport when the Y override snaps them up.
+ * Build an incline: a sloped wedge over the slope cells [0..s.length-2] of
+ * the structure footprint. Width spans s.width cells perpendicular. The wedge
+ * rises from y=tierLower at the front edge of cell [0] to y=tierUpper at the
+ * back edge of cell [s.length-2] (= front edge of the landing cell, where
+ * the cliff transition sits in the grid).
  */
 function buildInclineMesh(
   s: BuiltStructure,
   gridSampleTierTop: (cx: number, cz: number) => number,
 ): THREE.Mesh {
   const [fx, fz] = forwardOf(s.rotation);
+  const [rx, rz] = rightOf(s.rotation);
   const [originCx, originCz] = s.originCell;
+  const slopeLength = s.length - 1;
 
   const tierLower = gridSampleTierTop(originCx, originCz);
-  const tierUpper = gridSampleTierTop(originCx + fx, originCz + fz);
+  const tierUpper = gridSampleTierTop(
+    originCx + fx * slopeLength,
+    originCz + fz * slopeLength,
+  );
   const height = Math.max(0.05, tierUpper - tierLower);
 
   const lowerWx = TERRAIN_ORIGIN.x + (originCx + 0.5) * CELL;
   const lowerWz = TERRAIN_ORIGIN.z + (originCz + 0.5) * CELL;
+  // Geometric centre of the slope footprint (slopeLength × s.width cells).
+  const slopeMidI = (slopeLength - 1) / 2;
+  const widthMidJ = (s.width - 1) / 2;
+  const centerWx = lowerWx + fx * slopeMidI + rx * widthMidJ;
+  const centerWz = lowerWz + fz * slopeMidI + rz * widthMidJ;
 
   const mesh = new THREE.Mesh(
     unitWedgeGeometry(),
@@ -240,11 +240,9 @@ function buildInclineMesh(
     }),
   );
   mesh.name = `incline-${s.id}`;
-  // Wedge spans the lower cell only — length=1m along forward.
-  mesh.scale.set(CELL, height, s.width * CELL);
+  mesh.scale.set(slopeLength * CELL, height, s.width * CELL);
   mesh.rotation.y = -((s.rotation * Math.PI) / 180);
-  // Wedge centred on the lower cell, with its bottom at lower tier.
-  mesh.position.set(lowerWx, tierLower, lowerWz);
+  mesh.position.set(centerWx, tierLower, centerWz);
   // Shadow casting disabled until the custom depth material is patched with
   // the rolling-world warp. Without it, the shadow pass renders the mesh at
   // flat world Y while the visible pass renders it warped — produces visible

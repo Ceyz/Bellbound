@@ -890,17 +890,17 @@ renderer.setAnimationLoop(() => {
     island.player.position.x,
     island.player.position.z,
   );
-  // Step 9.3 / 9.4 Y override: when the player's cell sits inside a built
-  // structure, override the heightmap Y so the player rides the structure.
-  //   - bridge:    Y = LAND tier top of the (same-tier) endpoint.
-  //   - staircase: 2 discrete steps along the lower cell's forward axis —
-  //                front half = half-tier, back half = upper tier.
-  //   - incline:   Y interpolated linearly across the lower cell's forward
-  //                axis (front = lower tier, back = upper tier). The player
-  //                walks UP the ramp rather than teleporting.
-  // Player position projected onto the structure's forward axis from the
-  // origin cell centre gives a [0..1] progress for the lower cell (and >=1
-  // when the player is in the upper cell).
+  // Y override: when the player's cell sits inside a built structure,
+  // override the heightmap Y so the player rides the structure.
+  //   - bridge:    Y = LAND tier top of the (same-tier) endpoints.
+  //   - staircase: slopeLength = s.length-1 discrete steps along the slope
+  //                cells; landing cell sits at upper tier.
+  //   - incline:   Y interpolated linearly across the slopeLength slope
+  //                cells (front of cell [0] = lower tier, back of cell
+  //                [slopeLength-1] = upper tier); landing at upper tier.
+  // `t` is the player's projected distance from the origin cell's front edge
+  // along forward, in cell units: t in [i, i+1) means the player is on
+  // cell [i] of the footprint.
   const [pCx, pCz] = terrainGrid.worldToCell(
     island.player.position.x,
     island.player.position.z,
@@ -915,24 +915,28 @@ renderer.setAnimationLoop(() => {
       targetY = terrainGrid.cellHeight(s.originCell[0], s.originCell[1]);
     } else if (s.kind === 'staircase' || s.kind === 'incline') {
       const [fx, fz] = forwardOf(s.rotation);
-      const upperCx = s.originCell[0] + fx;
-      const upperCz = s.originCell[1] + fz;
+      const slopeLength = s.length - 1;
       const tierLower = terrainGrid.cellHeight(s.originCell[0], s.originCell[1]);
-      const tierUpper = terrainGrid.cellHeight(upperCx, upperCz);
+      const tierUpper = terrainGrid.cellHeight(
+        s.originCell[0] + fx * slopeLength,
+        s.originCell[1] + fz * slopeLength,
+      );
       const oCenterWx = TERRAIN_ORIGIN.x + (s.originCell[0] + 0.5);
       const oCenterWz = TERRAIN_ORIGIN.z + (s.originCell[1] + 0.5);
       const dxFromOrigin = island.player.position.x - oCenterWx;
       const dzFromOrigin = island.player.position.z - oCenterWz;
-      // t=0 at the lower cell's front (toward LAND-T0 ground), t=1 at its
-      // back (cell boundary with upper cell), t in [1, 2] in the upper cell.
       const t = (fx * dxFromOrigin + fz * dzFromOrigin) + 0.5;
       if (s.kind === 'incline') {
-        const clampedT = Math.max(0, Math.min(1, t));
-        targetY = tierLower + (tierUpper - tierLower) * clampedT;
+        const progress = Math.max(0, Math.min(1, t / slopeLength));
+        targetY = tierLower + (tierUpper - tierLower) * progress;
       } else {
-        // staircase: 2 discrete steps in the lower cell.
-        const halfHeight = (tierUpper - tierLower) * 0.5;
-        targetY = t < 0.5 ? tierLower + halfHeight : tierUpper;
+        // staircase: discrete steps. Player on cell [i] of the slope rides
+        // step (i+1); on the landing cell [slopeLength] they sit at upper.
+        const stepHeight = (tierUpper - tierLower) / slopeLength;
+        const cellIndex = Math.max(0, Math.min(slopeLength, Math.floor(t)));
+        targetY = cellIndex >= slopeLength
+          ? tierUpper
+          : tierLower + (cellIndex + 1) * stepHeight;
       }
     }
     break;
