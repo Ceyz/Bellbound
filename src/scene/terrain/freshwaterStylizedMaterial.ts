@@ -119,28 +119,16 @@ float fwNoise(vec2 p) {
 }
 `;
 
-// Composition: 2-stop green palette + 2 layers of directional flow streaks
-// scrolling downstream. No foam, no waves, no shore effects.
+// Composition: flat 2-stop palette, no flow streaks. The previous ship had
+// scrolling streaks scaled to read as "current" on a flowing river; on the
+// 1m grid those scaled into chunky swirls and beige-ish brighter bands that
+// the user read as glitchy waves on the surface. v1 ships flat; reintroduce
+// flow when we have real-world camera distance to read the streaks as
+// subtle current.
 const FRAGMENT_BODY = `
 vec2 wxz = vFreshwaterWorldXZ;
-
-// Broad slow noise drives the base color blend (lighter on crests of slow swells).
 float broadWave = fwNoise(wxz * 0.13 + vec2(0.055, -0.025) * uTime);
-
-// Two-stop palette. Green-blue base, lighter highlight where broadWave is high.
 vec3 riverGreen = vec3(0.16, 0.66, 0.82);
 vec3 riverLight = vec3(0.42, 0.90, 0.95);
-vec3 freshwaterColor = mix(riverGreen, riverLight, broadWave);
-
-// Primary flow streak — fast, oriented along world X (rivers in the
-// current heightmap snake east-west; future grid edits can rotate the flow
-// per-component but this is fine for MVP).
-vec2 flowUv1 = wxz * vec2(0.55, 1.40) + vec2(uTime * 0.55, 0.0);
-float streak1 = smoothstep(0.55, 0.88, fwNoise(flowUv1));
-freshwaterColor = mix(freshwaterColor, freshwaterColor * 1.18 + vec3(0.05, 0.06, 0.06), streak1 * 0.55);
-
-// Secondary slower streak adds depth so the flow doesn't tile.
-vec2 flowUv2 = wxz * vec2(0.32, 0.85) + vec2(uTime * 0.32 + 1.7, 0.0);
-float streak2 = smoothstep(0.62, 0.92, fwNoise(flowUv2));
-freshwaterColor = mix(freshwaterColor, freshwaterColor * 0.86, streak2 * 0.30);
+vec3 freshwaterColor = mix(riverGreen, riverLight, broadWave * 0.4);
 `;
