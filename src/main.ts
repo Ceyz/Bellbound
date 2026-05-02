@@ -6,7 +6,7 @@ import { rollingConfig, invalidateRollingCache } from './scene/rollingWorld';
 import {
   getPlayerStandingHeight,
 } from './scene/heightmap';
-import { GRID_D, GRID_W, Surface, TERRAIN_ORIGIN, Tier, getTerrainGrid } from './scene/terrain/TerrainGrid';
+import { GRID_D, GRID_W, Surface, TERRAIN_ORIGIN, Tier, getTerrainGrid, wouldEditMaintainTierMass } from './scene/terrain/TerrainGrid';
 import { bootTerrain, type IslandMintTerrainFields } from './scene/terrain/terrainSave';
 import { addBuiltStructure, bootBuiltStructures, canEditCellUnderStructures, forwardOf, getBuiltStructures, type BuiltStructure } from './scene/terrain/builtStructure';
 import { findBridgePlacement } from './scene/terrain/bridgePlacement';
@@ -472,12 +472,17 @@ buildMode.registerTool(gateByStructureBlock(trackUndo({
   canApply: (cx, cz) => {
     if (!terraformGrid.cellInBounds(cx, cz)) return false;
     if (terraformGrid.getSurface(cx, cz) !== Surface.LAND) return false;
-    if (terraformGrid.getTier(cx, cz) >= Tier.T3) return false;
+    const currentTier = terraformGrid.getTier(cx, cz);
+    if (currentTier >= Tier.T3) return false;
     // Stricter than just the player's cell: any cell whose footprint
     // overlaps the player's collision circle is refused, so a cliff wall
     // raised flush against them never clips into their body.
     if (playerOverlapsCell(cx, cz)) return false;
-    if (terraformGrid.getTier(cx, cz) === Tier.T0 && isBeachCell(cx, cz)) return false;
+    if (currentTier === Tier.T0 && isBeachCell(cx, cz)) return false;
+    // Tier-mass rule: the post-raise grid must still have every tier-T
+    // component containing a 2×2 block of LAND tier ≥ T cells.
+    const newTier = (currentTier + 1) as Tier;
+    if (!wouldEditMaintainTierMass(terraformGrid, cx, cz, Surface.LAND, newTier)) return false;
     return true;
   },
   apply: (cx, cz) => {
@@ -495,17 +500,21 @@ buildMode.registerTool(gateByStructureBlock(trackUndo({
   canApply: (cx, cz) => {
     if (!terraformGrid.cellInBounds(cx, cz)) return false;
     if (terraformGrid.getSurface(cx, cz) !== Surface.LAND) return false;
-    if (terraformGrid.getTier(cx, cz) <= Tier.T0) return false;
+    const currentTier = terraformGrid.getTier(cx, cz);
+    if (currentTier <= Tier.T0) return false;
     // Same overlap rule as cliff_raise — lowering a cell adjacent to the
     // player drops the wall they're leaning against and re-snaps their
     // standing height a frame later, easy to mis-read as a teleport.
     if (playerOverlapsCell(cx, cz)) return false;
     // No 4-neighbor at strictly higher tier (cantilever rule).
-    const t = terraformGrid.getTier(cx, cz);
     for (const [dx, dz] of [[1, 0], [-1, 0], [0, 1], [0, -1]] as const) {
       if (terraformGrid.cellInBounds(cx + dx, cz + dz)
-        && terraformGrid.getTier(cx + dx, cz + dz) > t) return false;
+        && terraformGrid.getTier(cx + dx, cz + dz) > currentTier) return false;
     }
+    // Tier-mass rule: lowering can split a plateau into two sub-components,
+    // either of which might lose its 2×2 sub-block.
+    const newTier = (currentTier - 1) as Tier;
+    if (!wouldEditMaintainTierMass(terraformGrid, cx, cz, Surface.LAND, newTier)) return false;
     return true;
   },
   apply: (cx, cz) => {
@@ -530,6 +539,13 @@ buildMode.registerTool(gateByStructureBlock(trackUndo({
     if (s !== Surface.LAND && s !== Surface.FRESHWATER) return false;
     // No water on the coastal sand band (would erode the silhouette).
     if (s === Surface.LAND && isBeachCell(cx, cz)) return false;
+    // Tier-mass rule: digging a LAND tier-T cell removes it from the LAND
+    // mask at every tier ≤ T, which can split a plateau. (FRESHWATER no-op
+    // skips the check — the grid byte doesn't change.)
+    if (s === Surface.LAND) {
+      const currentTier = terraformGrid.getTier(cx, cz);
+      if (!wouldEditMaintainTierMass(terraformGrid, cx, cz, Surface.FRESHWATER, currentTier)) return false;
+    }
     return true;
   },
   apply: (cx, cz) => {
@@ -547,7 +563,12 @@ buildMode.registerTool(gateByStructureBlock(trackUndo({
   label: 'Boucher eau',
   canApply: (cx, cz) => {
     if (!terraformGrid.cellInBounds(cx, cz)) return false;
-    return terraformGrid.getSurface(cx, cz) === Surface.FRESHWATER;
+    if (terraformGrid.getSurface(cx, cz) !== Surface.FRESHWATER) return false;
+    // Tier-mass rule: filling adds a LAND cell at the FW cell's tier, which
+    // can be a new isolated 1-cell plateau if no neighbour shares the tier.
+    const currentTier = terraformGrid.getTier(cx, cz);
+    if (!wouldEditMaintainTierMass(terraformGrid, cx, cz, Surface.LAND, currentTier)) return false;
+    return true;
   },
   apply: (cx, cz) => {
     const err = terraformGrid.fillFreshwater(cx, cz);

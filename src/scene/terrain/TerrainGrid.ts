@@ -686,6 +686,112 @@ export async function gunzipBytes(input: Uint8Array): Promise<Uint8Array> {
   return new Uint8Array(await new Response(stream).arrayBuffer());
 }
 
+// ─── Tier-mass validator ────────────────────────────────────────────────
+// Editor + generator share this rule: every connected component of LAND
+// cells at tier ≥ T (for each T ∈ {1, 2, 3}) must contain at least one full
+// 2×2 sub-block of LAND cells at tier ≥ T. Forbids isolated 1-cell spikes
+// AND 1-wide cliff corridors. Higher tiers count as support: the mask is
+// `surface === LAND && tier >= T`, so a T2 plateau on top of T1 doesn't
+// disqualify the T1 cells underneath when validating tier 1.
+
+const CARDINAL_NEIGHBORS: ReadonlyArray<readonly [number, number]> = [
+  [1, 0], [-1, 0], [0, 1], [0, -1],
+];
+
+/**
+ * Validate the tier-mass rule on the grid. Pass `overrides` to validate a
+ * hypothetical grid state without mutating: for each `(cx, cz)` in the map,
+ * the simulated `surface` / `tier` is used in place of the grid's real cell.
+ * Returns one error string per offending component; empty array iff valid.
+ */
+export function validateTierMass(
+  grid: TerrainGrid,
+  overrides?: ReadonlyMap<number, { surface: Surface; tier: Tier }>,
+): string[] {
+  const errors: string[] = [];
+  const W = grid.width;
+  const D = grid.depth;
+
+  const readSurface = (cx: number, cz: number): Surface => {
+    const o = overrides?.get(cz * W + cx);
+    return o ? o.surface : grid.getSurface(cx, cz);
+  };
+  const readTier = (cx: number, cz: number): Tier => {
+    const o = overrides?.get(cz * W + cx);
+    return o ? o.tier : grid.getTier(cx, cz);
+  };
+
+  for (let t = 1; t <= 3; t += 1) {
+    const visited = new Uint8Array(W * D);
+    for (let seedZ = 0; seedZ < D; seedZ += 1) {
+      for (let seedX = 0; seedX < W; seedX += 1) {
+        const seedIdx = seedZ * W + seedX;
+        if (visited[seedIdx]) continue;
+        if (readSurface(seedX, seedZ) !== Surface.LAND) continue;
+        if (readTier(seedX, seedZ) < t) continue;
+
+        // Flood-fill the component containing (seedX, seedZ).
+        const cells: Array<[number, number]> = [];
+        const stack: Array<[number, number]> = [[seedX, seedZ]];
+        visited[seedIdx] = 1;
+        while (stack.length > 0) {
+          const [px, pz] = stack.pop()!;
+          cells.push([px, pz]);
+          for (const [dx, dz] of CARDINAL_NEIGHBORS) {
+            const nx = px + dx;
+            const nz = pz + dz;
+            if (nx < 0 || nx >= W || nz < 0 || nz >= D) continue;
+            const nIdx = nz * W + nx;
+            if (visited[nIdx]) continue;
+            if (readSurface(nx, nz) !== Surface.LAND) continue;
+            if (readTier(nx, nz) < t) continue;
+            visited[nIdx] = 1;
+            stack.push([nx, nz]);
+          }
+        }
+
+        // Look for a 2×2 sub-block fully inside the component.
+        const memberIdx = new Set<number>(cells.map(([cx, cz]) => cz * W + cx));
+        let foundSquare = false;
+        for (const [px, pz] of cells) {
+          if (
+            memberIdx.has(pz * W + (px + 1))
+            && memberIdx.has((pz + 1) * W + px)
+            && memberIdx.has((pz + 1) * W + (px + 1))
+          ) {
+            foundSquare = true;
+            break;
+          }
+        }
+        if (!foundSquare) {
+          errors.push(
+            `tier-${t} mass at (${seedX}, ${seedZ}) has no 2×2 block (size=${cells.length})`,
+          );
+        }
+      }
+    }
+  }
+  return errors;
+}
+
+/**
+ * Predicate: would changing cell `(cx, cz)` to the given surface + tier
+ * leave the grid satisfying the tier-mass rule? Sugar over `validateTierMass`
+ * with a single-cell override map; the editor's `canApply` predicates use it
+ * to drive the red/green cursor.
+ */
+export function wouldEditMaintainTierMass(
+  grid: TerrainGrid,
+  cx: number,
+  cz: number,
+  newSurface: Surface,
+  newTier: Tier,
+): boolean {
+  const overrides = new Map<number, { surface: Surface; tier: Tier }>();
+  overrides.set(cz * grid.width + cx, { surface: newSurface, tier: newTier });
+  return validateTierMass(grid, overrides).length === 0;
+}
+
 // ─── Singleton ───────────────────────────────────────────────────────────
 // Step 2 swap: heightmap.ts and islandShape.ts read from this grid instead of
 // the previous analytical predicates. The grid is baked once at module load

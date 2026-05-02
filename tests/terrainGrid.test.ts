@@ -10,6 +10,8 @@ import {
   TerrainGrid,
   Tier,
   tierHeight,
+  validateTierMass,
+  wouldEditMaintainTierMass,
 } from '../src/scene/terrain/TerrainGrid';
 import {
   deriveStructureGeometry,
@@ -608,3 +610,176 @@ function countSurfaces(grid: TerrainGrid) {
   });
   return { void: voidC, ocean, land, freshwater };
 }
+
+// ─── validateTierMass ───────────────────────────────────────────────────
+
+/**
+ * Helper: build a grid where every (cx, cz) in `cells` is set to LAND at
+ * the given tier; everything else stays VOID T0. Compact way to spell out
+ * the small fixtures the tier-mass tests need.
+ */
+function landGrid(cells: Array<{ cx: number; cz: number; tier: Tier }>): TerrainGrid {
+  const grid = new TerrainGrid();
+  for (const { cx, cz, tier } of cells) {
+    grid.setRawByte(cx, cz, (Surface.LAND << 6) | (tier << 4));
+  }
+  return grid;
+}
+
+function rect(
+  x0: number,
+  z0: number,
+  w: number,
+  d: number,
+  tier: Tier,
+): Array<{ cx: number; cz: number; tier: Tier }> {
+  const cells = [];
+  for (let cz = z0; cz < z0 + d; cz += 1) {
+    for (let cx = x0; cx < x0 + w; cx += 1) {
+      cells.push({ cx, cz, tier });
+    }
+  }
+  return cells;
+}
+
+describe('TerrainGrid — validateTierMass', () => {
+  it('accepts a 2×2 plateau at T1', () => {
+    const grid = landGrid(rect(10, 10, 2, 2, Tier.T1));
+    expect(validateTierMass(grid)).toEqual([]);
+  });
+
+  it('rejects an isolated single T1 cell', () => {
+    const grid = landGrid([{ cx: 10, cz: 10, tier: Tier.T1 }]);
+    const errors = validateTierMass(grid);
+    expect(errors).toHaveLength(1);
+    expect(errors[0]).toMatch(/tier-1 mass at \(10, 10\) has no 2×2 block/);
+  });
+
+  it('rejects a 1×4 horizontal strip at T1', () => {
+    const grid = landGrid(rect(10, 10, 4, 1, Tier.T1));
+    expect(validateTierMass(grid)[0]).toMatch(/tier-1.*no 2×2 block.*size=4/);
+  });
+
+  it('rejects a 4×1 vertical strip at T1', () => {
+    const grid = landGrid(rect(10, 10, 1, 4, Tier.T1));
+    expect(validateTierMass(grid)[0]).toMatch(/tier-1.*no 2×2 block.*size=4/);
+  });
+
+  it('accepts a 4×4 plateau plus a 1-cell spike attached to it (component contains 2×2)', () => {
+    const grid = landGrid([
+      ...rect(10, 10, 4, 4, Tier.T1),
+      { cx: 14, cz: 11, tier: Tier.T1 }, // spike off the east edge
+    ]);
+    expect(validateTierMass(grid)).toEqual([]);
+  });
+
+  it('rejects a 1-wide L-shape (no 2×2 anywhere in the bend)', () => {
+    // L-shape: 4 cells along +X, then 3 cells along +Z from the corner.
+    const grid = landGrid([
+      ...rect(10, 10, 4, 1, Tier.T1),
+      { cx: 13, cz: 11, tier: Tier.T1 },
+      { cx: 13, cz: 12, tier: Tier.T1 },
+      { cx: 13, cz: 13, tier: Tier.T1 },
+    ]);
+    expect(validateTierMass(grid)[0]).toMatch(/tier-1.*no 2×2 block/);
+  });
+
+  it('treats higher tiers as support: a T1 base under a T2 plateau passes the T1 check via the >= mask', () => {
+    // 1-wide T1 strip would normally fail at tier 1, but the T2 plateau on
+    // top counts as tier ≥ 1 too — the combined mask contains a 2×2.
+    const grid = landGrid([
+      ...rect(10, 10, 4, 1, Tier.T1),
+      ...rect(10, 11, 4, 1, Tier.T2),
+      ...rect(10, 12, 4, 1, Tier.T2),
+    ]);
+    // tier-1 mask = all 12 cells (T1 + T2 contiguously). Contains a 2×2 from
+    // (10,10)-(11,10)-(10,11)-(11,11) where the T1 strip meets the T2 strip.
+    // tier-2 mask = the 8 T2 cells (rect 4×2). 4×2 contains a 2×2.
+    expect(validateTierMass(grid)).toEqual([]);
+  });
+
+  it('rejects a T2 plateau with no 2×2 even when the T1 base is solid', () => {
+    // 4×4 T1 plateau, with a 1×3 T2 strip on top. T1 mask passes (the 4×4
+    // contains 2×2). T2 mask fails (1×3 has no 2×2).
+    const grid = landGrid([
+      ...rect(10, 10, 4, 4, Tier.T1),
+      { cx: 11, cz: 11, tier: Tier.T2 },
+      { cx: 12, cz: 11, tier: Tier.T2 },
+      { cx: 13, cz: 11, tier: Tier.T2 },
+    ]);
+    const errors = validateTierMass(grid);
+    expect(errors).toHaveLength(1);
+    expect(errors[0]).toMatch(/tier-2.*no 2×2 block/);
+  });
+
+  it('flags every offending component independently when multiple fail', () => {
+    // Two separate 1-wide T1 strips → two errors.
+    const grid = landGrid([
+      ...rect(10, 10, 3, 1, Tier.T1),
+      ...rect(20, 20, 1, 3, Tier.T1),
+    ]);
+    expect(validateTierMass(grid)).toHaveLength(2);
+  });
+
+  it('the analytical bake (real island) satisfies the rule', () => {
+    const grid = TerrainGrid.bakeFromAnalytical();
+    expect(validateTierMass(grid)).toEqual([]);
+  });
+});
+
+describe('TerrainGrid — wouldEditMaintainTierMass', () => {
+  it('a raise that would create an isolated T1 cell is refused', () => {
+    const grid = new TerrainGrid();
+    grid.setRawByte(10, 10, (Surface.LAND << 6) | (Tier.T0 << 4));
+    expect(wouldEditMaintainTierMass(grid, 10, 10, Surface.LAND, Tier.T1)).toBe(false);
+  });
+
+  it('a raise that would create the 4th cell of a 2×2 plateau is accepted', () => {
+    // Pre-existing L-shape: 3 cells of a 2×2 already at T1. Raising the 4th
+    // completes the square.
+    const grid = landGrid([
+      { cx: 10, cz: 10, tier: Tier.T1 },
+      { cx: 11, cz: 10, tier: Tier.T1 },
+      { cx: 10, cz: 11, tier: Tier.T1 },
+      { cx: 11, cz: 11, tier: Tier.T0 }, // about to raise
+    ]);
+    // Pre-edit grid is invalid (3-cell L has no 2×2). The predicate is about
+    // post-edit validity though — and the post-edit state IS valid.
+    expect(wouldEditMaintainTierMass(grid, 11, 11, Surface.LAND, Tier.T1)).toBe(true);
+  });
+
+  it('a lower that would split a T1 mass into two sub-components, one without a 2×2, is refused', () => {
+    // Layout: a 2×2 plateau in the east connected by a 1-wide bridge to a
+    // 1×3 strip in the west. Pre-edit the whole thing is one component and
+    // contains the east 2×2 — valid. Lowering (17, 20) cuts the bridge:
+    //   - West sub-component {(13, 20)..(16, 20)} = 1×4 → no 2×2 ❌
+    //   - East sub-component {(18..21, 20), (20..21, 21)} → still has 2×2 ✓
+    const grid = landGrid([
+      // West 1×3 strip
+      { cx: 13, cz: 20, tier: Tier.T1 },
+      { cx: 14, cz: 20, tier: Tier.T1 },
+      { cx: 15, cz: 20, tier: Tier.T1 },
+      // Connector
+      { cx: 16, cz: 20, tier: Tier.T1 },
+      { cx: 17, cz: 20, tier: Tier.T1 },
+      { cx: 18, cz: 20, tier: Tier.T1 },
+      { cx: 19, cz: 20, tier: Tier.T1 },
+      // East 2×2 plateau
+      { cx: 20, cz: 20, tier: Tier.T1 },
+      { cx: 21, cz: 20, tier: Tier.T1 },
+      { cx: 20, cz: 21, tier: Tier.T1 },
+      { cx: 21, cz: 21, tier: Tier.T1 },
+    ]);
+    // Pre-edit: one big component with the east 2×2 → valid.
+    expect(validateTierMass(grid)).toEqual([]);
+    // Lower the connector cell that bridges the two halves.
+    expect(wouldEditMaintainTierMass(grid, 17, 20, Surface.LAND, Tier.T0)).toBe(false);
+  });
+
+  it('a dig that turns a critical T1 cell to FRESHWATER is refused (FW counts as not-LAND)', () => {
+    // 2×2 T1 plateau. Digging any cell to FW removes it from the LAND mask
+    // → 3 LAND cells left, no 2×2.
+    const grid = landGrid(rect(10, 10, 2, 2, Tier.T1));
+    expect(wouldEditMaintainTierMass(grid, 10, 10, Surface.FRESHWATER, Tier.T1)).toBe(false);
+  });
+});
