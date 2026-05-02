@@ -149,7 +149,7 @@ describe('terrain splat material', () => {
     expect(material.name).toBe('terrain-splat');
     expect(material.vertexColors).toBe(false);
     expect(material.version).toBeGreaterThan(0);
-    expect(material.customProgramCacheKey()).toBe('terrain-splat:v23:4');
+    expect(material.customProgramCacheKey()).toBe('terrain-splat:v25:4');
   });
 
   it('exposes a stable custom program cache key per tile size', () => {
@@ -172,7 +172,7 @@ describe('stylized water material', () => {
     expect(material.name).toBe('water-stylized');
     expect(material.transparent).toBe(true);
     expect(material.depthWrite).toBe(false);
-    expect(material.customProgramCacheKey()).toBe('water-stylized:v62');
+    expect(material.customProgramCacheKey()).toBe('water-stylized:v65');
   });
 
   it('updates animation uniforms without recompiling the material', () => {
@@ -184,7 +184,7 @@ describe('stylized water material', () => {
     const uniforms = material.userData.waterUniforms;
     expect(uniforms.uTime.value).toBe(3.5);
     expect(uniforms.uWaveStrength.value).toBe(0.26);
-    expect(material.customProgramCacheKey()).toBe('water-stylized:v62');
+    expect(material.customProgramCacheKey()).toBe('water-stylized:v65');
   });
 });
 

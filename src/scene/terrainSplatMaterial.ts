@@ -94,7 +94,7 @@ export function createTerrainSplatMaterial(options: TerrainSplatOptions): THREE.
       .replace('#include <map_fragment>', FRAGMENT_SPLAT_BODY);
   };
 
-  material.customProgramCacheKey = () => `terrain-splat:v23:${tileSizeMeters}`;
+  material.customProgramCacheKey = () => `terrain-splat:v25:${tileSizeMeters}`;
   material.needsUpdate = true;
 
   return material;
@@ -159,6 +159,20 @@ float terrainNoise(vec2 p) {
   return mix(mix(a, b, u.x), mix(c, d, u.x), u.y);
 }
 
+// Gerstner-wave-1 phase signal — IDENTICAL to swashSignal() in
+// waterStylizedMaterial.ts (terrainHash here uses the same constants
+// as swashHash there, so terrainNoise IS swashNoise). Returning sin(phase1)
+// in both shaders means the dynamic shore boundary follows the visible
+// dominant ocean wave's crest exactly.
+float swashSignal(vec2 p, float t) {
+  vec2 dir = length(p) > 0.01 ? -normalize(p) : vec2(0.0, -1.0);
+  float w = 6.28318530718 / 12.0;
+  float speed = 2.4;
+  float phaseNoise = terrainNoise(p * 0.07) * 6.28318;
+  float phase = w * (dir.x * p.x + dir.y * p.y) - w * speed * t + phaseNoise;
+  return sin(phase);
+}
+
 vec3 sampleAntiTiled(sampler2D tex, vec2 worldXZ, float blend) {
   vec2 uvA = worldXZ / uTileSize;
   vec2 uvB = worldXZ / (uTileSize * 1.6) + vec2(13.0, 7.0);
@@ -200,23 +214,19 @@ vec2 splatUv = (vTerrainWorldXZ + uTerrainExtents * 0.5) / uTerrainExtents;
 float signedShoreMeters = terrainIslandSDF(vTerrainWorldXZ);
 
 // --- Dynamic shore boundary (wave wash on the visible coast) --------------
-// The LAND mesh's visible boundary is animated: at the wave's PEAK the
-// boundary retreats inland (water washes UP the beach), at the wave's
-// TROUGH it returns offshore (water recedes). Per-position phase noise
-// (scale 0.06, identical to the water shader's swashCycle) gives each
-// segment of the coast its own timing — no global pulsing ring.
+// swashCycle derived from swashSignal — the Gerstner wave 1 phase at THIS
+// fragment's world position. Both this shader AND the water shader compute
+// swashSignal identically (same wavelength 12 m, speed 2.4 m/s, inward
+// direction, phase noise) so the boundary motion follows the visible ocean
+// wave exactly, on every fragment independently.
 //
-// This replaces the previous static "greater than -0.80" discard. The
-// "trait that walks alone" / "gap between wave and water" the user
-// reported was caused by drawing a foam line on the static sand while
-// the water tried to bump up separately — now there is a single moving
-// water/sand boundary, no extra elements that can drift apart.
-float coastPhaseSwash = terrainNoise(vTerrainWorldXZ * 0.06) * 6.28318;
-float swashTSplat = uTime * 0.55 + coastPhaseSwash;
-float swashCycle = pow(sin(swashTSplat) * 0.5 + 0.5, 0.65);
-// Threshold animates: -0.55 (wave receded, more LAND visible)
-// to -1.65 (wave at peak, LAND retreated inland by 1.10 m).
-float swashThreshold = mix(-0.55, -1.65, swashCycle);
+// Cozy ACNH tuning: motion range trimmed to 30 cm only (mix(-0.55, -0.85)),
+// matching the water shader. The coast breathes gently with each passing
+// wave instead of pulsing dramatically.
+float swashHeight = swashSignal(vTerrainWorldXZ, uTime) * 0.5 + 0.5;
+float swashCycle = swashHeight;
+float swashThreshold = mix(-0.55, -0.85, swashCycle);
+float foamVisibility = smoothstep(0.55, 0.95, swashHeight);
 
 if (signedShoreMeters > swashThreshold + 0.4) discard;
 float shoreAa = clamp(fwidth(signedShoreMeters), 0.02, 0.15);
@@ -365,17 +375,16 @@ surfaceColor *= 1.0 - ao * 0.4;
 surfaceColor = mix(surfaceColor, surfaceColor * vec3(0.55, 0.42, 0.32), cliffEdge * 0.6);
 
 // --- Wet sand near the (animated) shore boundary --------------------------------
-// The visible LAND boundary already moves dynamically (via the swashThreshold
-// discard above) — the user perceives that as the water washing in/out. Here
-// we just darken the sand slightly within ~1 m INLAND of the current dynamic
-// boundary so freshly-uncovered sand reads as wet (cooler, slightly darker)
-// for a moment before drying back. No painted foam line — the moving
-// LAND/OCEAN edge IS the visible swash.
+// Subtle wet-sand tint within ~60 cm INLAND of the current dynamic boundary —
+// freshly-uncovered sand reads as wet (cooler, slightly darker) for a moment
+// before drying back. Gated by foamVisibility so it only appears where the
+// crest is currently strong, not as a permanent wet ring.
 float landSand = pickSand;
 float distFromBoundaryInland = max(0.0, swashThreshold - signedShoreMeters);
-float wetMask = (1.0 - smoothstep(0.0, 1.0, distFromBoundaryInland)) * landSand;
-surfaceColor *= mix(1.0, 0.72, wetMask);
-surfaceColor = mix(surfaceColor, surfaceColor * vec3(0.86, 0.92, 1.00), wetMask * 0.55);
+float wetMask = (1.0 - smoothstep(0.0, 0.60, distFromBoundaryInland))
+  * landSand * (0.40 + 0.60 * foamVisibility);
+surfaceColor *= mix(1.0, 0.78, wetMask);
+surfaceColor = mix(surfaceColor, surfaceColor * vec3(0.88, 0.93, 1.00), wetMask * 0.45);
 
 // Soft general damp zone independent of the breathing wave (always-wet line right
 // where land meets sea).

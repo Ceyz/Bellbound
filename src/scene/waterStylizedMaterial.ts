@@ -83,7 +83,7 @@ export function createWaterStylizedMaterial(options: WaterStylizedOptions): THRE
       );
   };
 
-  material.customProgramCacheKey = () => 'water-stylized:v62';
+  material.customProgramCacheKey = () => 'water-stylized:v65';
   material.needsUpdate = true;
 
   return material;
@@ -123,6 +123,38 @@ float wvNoise(vec2 p) {
   float c = wvHash(i + vec2(0.0, 1.0));
   float d = wvHash(i + vec2(1.0, 1.0));
   return mix(mix(a, b, u.x), mix(c, d, u.x), u.y);
+}
+
+// Shared swash noise — IDENTICAL implementation in terrainSplatMaterial.ts
+// so the swashSignal computed in both shaders agrees on a per-position
+// phase noise. Both shaders MUST use the same hash constants here.
+float swashHash(vec2 p) {
+  return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453);
+}
+float swashNoise(vec2 p) {
+  vec2 i = floor(p);
+  vec2 f = fract(p);
+  vec2 u = f * f * (3.0 - 2.0 * f);
+  float a = swashHash(i);
+  float b = swashHash(i + vec2(1.0, 0.0));
+  float c = swashHash(i + vec2(0.0, 1.0));
+  float d = swashHash(i + vec2(1.0, 1.0));
+  return mix(mix(a, b, u.x), mix(c, d, u.x), u.y);
+}
+
+// Gerstner-wave-1 phase signal at world position p, time t. The visible
+// dominant ocean wave (g1 in the body below) uses the SAME phase formula,
+// so swashCycle = sin(phase1) maps directly to that wave's vertical
+// oscillation. The LAND splat shader replicates this function bit-for-bit
+// so its dynamic shore boundary moves WITH the visible water wave instead
+// of running on an independent timer.
+float swashSignal(vec2 p, float t) {
+  vec2 dir = length(p) > 0.01 ? -normalize(p) : vec2(0.0, -1.0);
+  float w = 6.28318530718 / 12.0;
+  float speed = 2.4;
+  float phaseNoise = swashNoise(p * 0.07) * 6.28318;
+  float phase = w * (dir.x * p.x + dir.y * p.y) - w * speed * t + phaseNoise;
+  return sin(phase);
 }
 
 // Gerstner wave (Fournier & Reeves 1986, popularised by GPU Gems 1 ch.1).
@@ -185,51 +217,51 @@ vec2 inward = length(wxz) > 0.01 ? -normalize(wxz) : vec2(0.0, -1.0);
 //   cos 30° = 0.866, sin 30° = 0.5
 vec2 inwardRot1 = vec2(0.866 * inward.x - 0.5 * inward.y,
                         0.5   * inward.x + 0.866 * inward.y);
-vec2 inwardRot2 = vec2(0.866 * inward.x + 0.5 * inward.y,
-                       -0.5   * inward.x + 0.866 * inward.y);
 
-// Three Gerstner waves with PER-POSITION phase noise. Without the noise,
-// dir = -normalize(wxz) (pointing radially inward) gives waves whose phase
-// is dot(dir, P) = -|P| — meaning every point at the same distance from
-// origin is at the same phase. The whole ocean reads as one giant
-// concentric ring expanding/contracting toward the island. Adding wvNoise-
-// driven phase offsets per wave breaks that symmetry: adjacent areas land
-// at different phases, producing scattered local wave packets instead of
-// one global swell.
+// Two Gerstner waves with PER-POSITION phase noise. Cozy ACNH-style:
+// amplitudes kept tiny so the water reads as nearly flat — heavy Y bumps
+// at the cozy camera angle look like rolling hills, not water. The visible
+// motion comes from the foam and the dynamic shore boundary, not from
+// vertex displacement.
 //
-// Per-wave Q = 0.30 (sum 0.90, ≤1 for stability).
-//   Wave 1: long dominant swell, period ~5 s, A=22cm.
-//   Wave 2: medium swell rotated +30°, period ~4 s, A=15cm.
-//   Wave 3: short chop rotated -30°, period ~3 s, A=10cm.
-float pn1 = wvNoise(wxz * 0.07) * 6.28318;
+// Per-wave Q = 0.40 (sum 0.80, ≤1 for stability).
+//   Wave 1: long dominant swell, period ~5 s, A=4cm.
+//   Wave 2: medium swell rotated +30°, period ~4 s, A=3cm.
+//
+// Wave 1 uses swashNoise (NOT wvNoise) for its phase noise so it matches
+// what swashSignal() computes — the LAND/OCEAN boundary moves WITH this
+// wave's crest instead of on an independent timer.
+float pn1 = swashNoise(wxz * 0.07) * 6.28318;
 float pn2 = wvNoise(wxz * 0.09 + vec2(3.7, 5.1)) * 6.28318;
-float pn3 = wvNoise(wxz * 0.13 + vec2(8.2, 11.7)) * 6.28318;
-vec3 g1 = gerstnerWave(wxz, inward,     12.0, 0.22, 2.4,  0.30, uTime, pn1);
-vec3 g2 = gerstnerWave(wxz, inwardRot1,  8.5, 0.15, 2.13, 0.30, uTime, pn2);
-vec3 g3 = gerstnerWave(wxz, inwardRot2,  6.0, 0.10, 2.0,  0.30, uTime, pn3);
-vec3 gerstnerDisp = (g1 + g2 + g3) * waveScale;
+vec3 g1 = gerstnerWave(wxz, inward,     12.0, 0.04, 2.4,  0.40, uTime, pn1);
+vec3 g2 = gerstnerWave(wxz, inwardRot1,  8.5, 0.03, 2.13, 0.40, uTime, pn2);
+vec3 gerstnerDisp = (g1 + g2) * waveScale;
 transformed.x += gerstnerDisp.x;
 transformed.y += gerstnerDisp.y;
 transformed.z += gerstnerDisp.z;
 
-// Wave swash cycle: same per-position phase noise (scale 0.06) and same
-// formula (uTime * 0.55, pow(sin, 0.65)) as the LAND splat shader, so the
-// water-side foam appears at exactly the same swashThreshold position the
-// LAND uses for its discard — the moving LAND/OCEAN boundary is bordered
-// on the water side by foam, on the land side by wet sand, both following
-// one shared front. No more "trait that walks alone" or gap between the
-// foam and the water — they share one varying.
+// Wave swash cycle: derived DIRECTLY from the dominant Gerstner wave's
+// phase via swashSignal(). The LAND splat shader computes swashSignal
+// identically so both sides of the boundary move together.
+//
+// Cozy ACNH tuning:
+//   - swashHeight (0-1): the wave height proxy at this position
+//   - boundary motion = 30 cm only (mix(-0.55, -0.85)) — the coast breathes
+//     gently rather than pulses dramatically
+//   - foam visibility thresholded at swashHeight > 0.55 — foam appears
+//     only at strong crests, scattered along the coast as wave 1 propagates
 float signedShoreVtx = islandSDF(wxz);
-float coastPhaseSwash = wvNoise(wxz * 0.06) * 6.28318;
-float swashT = uTime * 0.55 + coastPhaseSwash;
-float swashCycle = pow(sin(swashT) * 0.5 + 0.5, 0.65);
-float swashThreshold = mix(-0.55, -1.65, swashCycle);
+float swashRaw = swashSignal(wxz, uTime);
+float swashHeight = swashRaw * 0.5 + 0.5;
+float swashCycle = swashHeight;
+float swashThreshold = mix(-0.55, -0.85, swashCycle);
+float foamVisibility = smoothstep(0.55, 0.95, swashHeight);
 
 vWaterWorldXZ = wxz;
 // Normalize Gerstner Y sum to roughly [-1, +1] for the fragment crest tint.
-// Total max amplitude = 0.22 + 0.15 + 0.10 = 0.47.
-vWaveCrest = (g1.y + g2.y + g3.y) / 0.47;
-vWashAmp = 0.0;          // legacy varying
+// Total max amplitude = 0.04 + 0.03 = 0.07.
+vWaveCrest = (g1.y + g2.y) / 0.07;
+vWashAmp = foamVisibility;  // repurposed: foam intensity for fragment shader
 vRunupPhase = swashCycle;
 vFrontSDF = swashThreshold;
 `;
@@ -433,8 +465,11 @@ baseColor += vec3(0.18, 0.22, 0.22) * caustic * causticDepthFade
 // Drifting light streaks removed 2026-05-02 — they read as cloud reflections
 // drifting across the open ocean.
 
-// Subtle broad shimmer accent.
-baseColor += vec3(0.14, 0.18, 0.18) * shimmer * 0.22;
+// Broad shimmer accent — boosted for cozy ACNH style: with the Gerstner
+// vertex displacement now tiny (4 cm), the visible motion is mostly painted
+// by light/color variation, so this shimmer carries more of the visual
+// "moving water" signal.
+baseColor += vec3(0.14, 0.18, 0.18) * shimmer * 0.42;
 
 // Crest highlight: ridges of the displaced surface read brighter, troughs
 // darker. Re-widened (was 0.94/1.08 ±7%, now 0.88/1.18 ±15%) so the wave shape
@@ -487,33 +522,17 @@ float frontMask = smoothstep(0.55, 0.85, frontPattern)
   * oceanFlag;
 baseColor += vec3(0.10, 0.16, 0.20) * frontMask * 0.42;
 
-// --- Shore foam: tight band on the OCEAN side of the dynamic boundary ----------
-// vFrontSDF (vertex-interpolated) carries the swashThreshold computed in the
-// vertex shader — exactly the same value the LAND splat shader uses for its
-// discard. So the LAND visibly ends at SDF=swashThreshold, and the foam here
-// paints just on the OCEAN side of that boundary (signedShoreFrag slightly
-// greater than swashThreshold). Result: foam hugs the moving boundary from
-// the water side; wet sand hugs it from the land side; no gap.
+// White foam crest at the dynamic boundary REMOVED at user request — the
+// boundary motion + wet sand on the LAND side already convey the wave
+// washing in/out, no painted white line needed. Pale-cyan trail kept (very
+// subtle) for a hint of water reflection just offshore of the boundary.
 float signedShoreFrag = islandSDF(vWaterWorldXZ);
 float distOutside = max(0.0, signedShoreFrag - vFrontSDF);
-float foamCrest = (1.0 - smoothstep(0.0, 0.40, distOutside));
-foamCrest *= smoothstep(0.10, 0.40, vRunupPhase) * oceanFlag;
-
-// Bubble breakup: 2-octave noise so the foam reads as broken surf, not a
-// clean painted band.
-vec2 bubbleUv1 = vWaterWorldXZ * 5.5 + vec2(uTime * 0.35, -uTime * 0.25);
-vec2 bubbleUv2 = vWaterWorldXZ * 11.0 + vec2(-uTime * 0.18, uTime * 0.22);
-float bubbleNoise = waterNoise(bubbleUv1) * 0.65 + waterNoise(bubbleUv2) * 0.35;
-foamCrest *= 0.50 + 0.50 * smoothstep(0.42, 0.85, bubbleNoise);
-
-// Pale-cyan trail offshore of the foam crest — the shallow sheet of water
-// at the breaking wave. Fades within ~1 m of the boundary.
 float trailMask = (1.0 - smoothstep(0.10, 1.2, distOutside))
-  * smoothstep(0.05, 0.20, vRunupPhase) * oceanFlag;
-
-float foamMask = foamCrest;
-baseColor = mix(baseColor, vec3(0.97, 0.99, 0.99), foamCrest * 0.85);
-baseColor = mix(baseColor, vec3(0.55, 0.88, 0.96), trailMask * 0.35);
+  * vWashAmp * oceanFlag;
+float foamCrest = 0.0;  // legacy — kept zero so the alpha calc below stays valid
+float foamMask = 0.0;
+baseColor = mix(baseColor, vec3(0.55, 0.88, 0.96), trailMask * 0.25);
 
 // Offshore whitecaps removed at user request 2026-05-02 — the white speckles
 // scattered across the deep ocean read as cloud reflections / dirty water
