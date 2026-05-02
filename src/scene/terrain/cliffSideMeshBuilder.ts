@@ -3,29 +3,22 @@ import type { SurfaceTextureSet } from '../proceduralTextures';
 import type { TerrainGrid } from './TerrainGrid';
 
 /**
- * Builds vertical wall meshes at every grid tier discontinuity (Step 3 of the
- * terraforming refactor). Replaces the hardcoded `cliffSideMesh.ts` builder
- * which only knew about the rectangular NW cliff plateau.
- *
- * Inputs come from `grid.forEachTierDiscontinuity()`, which yields every
- * cell-to-cell edge where the two cells have different `cellHeight()`. This
- * covers:
+ * Builds vertical wall meshes at every grid tier discontinuity. Inputs come
+ * from `grid.forEachTierDiscontinuity()`, which yields every cell-to-cell edge
+ * where the two cells have different `cellHeight()`. This covers:
  *   - LAND tier-N → LAND tier-(N-1) cliff drops
  *   - LAND tier-N → FRESHWATER river / pond banks (the bed sits below tier top)
  *   - LAND tier-N → OCEAN edges are skipped (OCEAN is owned by the water plane
  *     and the splat shader's offshore-discard, not by a vertical wall)
  *
- * Two meshes are produced and grouped:
- *   - `cliff-wall-faces` : the painted vertical rock face (uses cliff side texture)
- *   - `cliff-grass-lips` : a thin slab draped over the top edge for the ACNH
- *                          "grass curl over rock" silhouette (uses cliff top texture)
- *
- * The lip is omitted on FRESHWATER edges (river banks have a wet-sand color
- * derived from the splat dirt channel; no grass overhang reads correctly there).
+ * Produces `cliff-walls`, the painted vertical rock face. The grass overhang
+ * lip mesh that previously sat on top of every edge has been removed: it
+ * rendered as a flat green rectangle that read as "tape stuck on the cliff
+ * edge" rather than a curl-over silhouette. The real fix lives elsewhere
+ * (bevel geometry baked into the cliff face, or a shader-based top-edge
+ * transition) and is deferred until after generator v2.
  */
 
-const LIP_THICKNESS_METERS = 0.07;
-const LIP_OVERHANG_METERS = 0.08;
 const HORIZONTAL_TILE_METERS = 4;
 const VERTICAL_TILES = 1;
 
@@ -48,47 +41,26 @@ export function buildCliffSideMesh(
   });
   cliffWallMaterial.name = 'cliff-wall-material';
 
-  const lipMaterial = new THREE.MeshStandardMaterial({
-    map: textures.cliffTop,
-    roughness: 0.9,
-  });
-  lipMaterial.name = 'cliff-side-lip-material';
-
   const cliffGeometries: THREE.BufferGeometry[] = [];
-  const lipGeometries: THREE.BufferGeometry[] = [];
 
-  grid.forEachTierDiscontinuity((lowerCx, lowerCz, upperCx, upperCz, dx, dz, drop) => {
+  grid.forEachTierDiscontinuity((lowerCx, lowerCz, _upperCx, _upperCz, dx, dz, drop) => {
     const lowerCell = grid.getCell(lowerCx, lowerCz);
     const isWaterBank = lowerCell.surface === 3 /* FRESHWATER */;
 
-    // Skip walls + lips entirely for FRESHWATER edges per user feedback. The
-    // visible "30 cm drop" then comes from the LAND quad ending at the cell
-    // boundary at y = tierTop and the (opaque) water surface plane sitting at
-    // y = tierTop - 0.30 inside the FW cell. From oblique angles this reads
-    // as a clean vertical step from grass to water without an exposed bank
-    // material — and no brown rim around ponds when seen from above. The
-    // wet-sand wall material + recessed geometry helped avoid the worst
-    // artefacts, but the user's preference is no exposed bank at all.
+    // Skip walls entirely for FRESHWATER edges. The visible drop from grass to
+    // water comes from the LAND quad ending at the cell boundary at y = tierTop
+    // and the opaque water surface plane sitting at y = tierTop - 0.30 inside
+    // the FW cell — from oblique angles this reads as a clean vertical step.
     if (isWaterBank) return;
 
     const wallGeometry = buildWallQuadGeometry(grid, lowerCx, lowerCz, dx, dz, drop, true);
     cliffGeometries.push(wallGeometry);
-    lipGeometries.push(buildLipQuadGeometry(grid, upperCx, upperCz, dx, dz));
   });
 
   if (cliffGeometries.length > 0) {
     const merged = mergeBufferGeometries(cliffGeometries);
     const mesh = new THREE.Mesh(merged, cliffWallMaterial);
     mesh.name = 'cliff-walls';
-    mesh.castShadow = false;
-    mesh.receiveShadow = true;
-    group.add(mesh);
-  }
-
-  if (lipGeometries.length > 0) {
-    const merged = mergeBufferGeometries(lipGeometries);
-    const mesh = new THREE.Mesh(merged, lipMaterial);
-    mesh.name = 'cliff-lips';
     mesh.castShadow = false;
     mesh.receiveShadow = true;
     group.add(mesh);
@@ -191,56 +163,6 @@ function buildWallQuadGeometry(
   geometry.setAttribute('uv', new THREE.Float32BufferAttribute(uvs, 2));
   geometry.setIndex(new THREE.Uint32BufferAttribute(indices, 1));
   return geometry;
-}
-
-/**
- * Thin grass slab draped over the upper cell's edge that overhangs the wall.
- * Sits just below the upper cell's top Y so depth-buffer co-planarity with the
- * ground mesh is not an issue.
- */
-function buildLipQuadGeometry(
-  grid: TerrainGrid,
-  upperCx: number,
-  upperCz: number,
-  dx: number,
-  dz: number,
-): THREE.BufferGeometry {
-  const upperY = grid.cellHeight(upperCx, upperCz);
-
-  const x0 = grid.originX + upperCx * grid.cellSize;
-  const z0 = grid.originZ + upperCz * grid.cellSize;
-  const x1 = x0 + grid.cellSize;
-  const z1 = z0 + grid.cellSize;
-
-  // The lip is a tiny BoxGeometry overhanging the edge of the UPPER cell, on
-  // the side facing the lower neighbor (i.e. the side OPPOSITE to (dx, dz)).
-  let centerX: number, centerZ: number, sizeX: number, sizeZ: number;
-  if (dx === 1) {
-    // upper cell is to the east of the wall; lip overhangs its WEST edge
-    centerX = x0 - LIP_OVERHANG_METERS * 0.5;
-    centerZ = (z0 + z1) * 0.5;
-    sizeX = LIP_OVERHANG_METERS * 2;
-    sizeZ = grid.cellSize;
-  } else if (dx === -1) {
-    centerX = x1 + LIP_OVERHANG_METERS * 0.5;
-    centerZ = (z0 + z1) * 0.5;
-    sizeX = LIP_OVERHANG_METERS * 2;
-    sizeZ = grid.cellSize;
-  } else if (dz === 1) {
-    centerX = (x0 + x1) * 0.5;
-    centerZ = z0 - LIP_OVERHANG_METERS * 0.5;
-    sizeX = grid.cellSize;
-    sizeZ = LIP_OVERHANG_METERS * 2;
-  } else {
-    centerX = (x0 + x1) * 0.5;
-    centerZ = z1 + LIP_OVERHANG_METERS * 0.5;
-    sizeX = grid.cellSize;
-    sizeZ = LIP_OVERHANG_METERS * 2;
-  }
-
-  const box = new THREE.BoxGeometry(sizeX, LIP_THICKNESS_METERS, sizeZ);
-  box.translate(centerX, upperY - LIP_THICKNESS_METERS * 0.5, centerZ);
-  return box;
 }
 
 /**

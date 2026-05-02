@@ -192,7 +192,7 @@ describe('stylized water material', () => {
 });
 
 describe('cliff side mesh', () => {
-  it('builds merged cliff wall + lip meshes from grid tier discontinuities', () => {
+  it('builds merged cliff wall mesh from grid tier discontinuities', () => {
     const island = createIslandScene();
 
     expect(island.cliffSideWalls.name).toBe('cliff-side-walls');
@@ -201,11 +201,8 @@ describe('cliff side mesh', () => {
       .filter((child): child is THREE.Mesh => child instanceof THREE.Mesh)
       .map((mesh) => mesh.name);
 
-    // The grid-driven builder produces one merged geometry for the painted
-    // rock faces and one for the grass overhang lips (no per-edge sub-meshes
-    // — that was the old hardcoded approach).
     expect(meshNames).toContain('cliff-walls');
-    expect(meshNames).toContain('cliff-lips');
+    expect(meshNames).not.toContain('cliff-lips');
   });
 
   it('puts the cliff walls mesh in the scene with shadow-receive on, cast off', () => {
