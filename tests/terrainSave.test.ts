@@ -189,7 +189,7 @@ describe('terrainSave — buildIslandMintTerrainFields', () => {
     expect(fields.grid_w).toBe(GRID_W);
     expect(fields.grid_d).toBe(GRID_D);
     expect(fields.cell_size).toBe(1.0);
-    expect(fields.tier_height).toBe(1.0);
+    expect(fields.tier_height).toBe(1.4);
     expect(fields.origin_x).toBe(-47);
     expect(fields.origin_z).toBe(-39);
     expect(fields.terrain_seed).toBe(DEFAULT_TERRAIN_SEED);

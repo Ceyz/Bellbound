@@ -17,8 +17,13 @@ export const GRID_W = 94;
 export const GRID_D = 78;
 export const CELL = 1.0;
 
-/** Spec-locked tier height in meters. Re-evaluate before first public save if too flat. */
-export const TIER_HEIGHT_METERS = 1.0;
+/**
+ * Tier vertical scale (meters). Inscribed at mint and validated client-side, so
+ * any change after Phase B (first public on-chain save) invalidates older saves.
+ * Bumped 1.0 → 1.4 pre-Phase B for ACNH-massive cliff feel; future scale changes
+ * must go through a new `terrain_base_shape_version`.
+ */
+export const TIER_HEIGHT_METERS = 1.4;
 
 /**
  * Where the river bed sits relative to its tier top (Y = tier - this).

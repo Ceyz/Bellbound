@@ -40,7 +40,7 @@ describe('TerrainGrid — geometry constants', () => {
     expect(GRID_W).toBe(94);
     expect(GRID_D).toBe(78);
     expect(CELL).toBe(1.0);
-    expect(TIER_HEIGHT_METERS).toBe(1.0);
+    expect(TIER_HEIGHT_METERS).toBe(1.4);
     expect(FRESHWATER_BED_OFFSET_METERS).toBe(0.5);
     expect(TERRAIN_ORIGIN).toEqual({ x: -47, z: -39 });
   });
