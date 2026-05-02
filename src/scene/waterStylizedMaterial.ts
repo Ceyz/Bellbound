@@ -83,7 +83,7 @@ export function createWaterStylizedMaterial(options: WaterStylizedOptions): THRE
       );
   };
 
-  material.customProgramCacheKey = () => 'water-stylized:v54';
+  material.customProgramCacheKey = () => 'water-stylized:v62';
   material.needsUpdate = true;
 
   return material;
@@ -105,13 +105,11 @@ const VERTEX_HEADER = `
 varying vec2 vWaterWorldXZ;
 varying float vWaveCrest;
 varying float vWashAmp;
+varying float vRunupPhase;
+varying float vFrontSDF;
 uniform float uTime;
 uniform float uWaveStrength;
 
-// Hash + value-noise replicated from the fragment header so we can break the
-// regularity of the summed-sin wave train. Pure sins read as a periodic motif at
-// distance ("swimming pool" feel); a noise-modulated extra octave gives chaotic
-// crest spacing that scans as natural surface motion.
 float wvHash(vec2 p) {
   return fract(sin(dot(p, vec2(41.7, 289.3))) * 23857.5453);
 }
@@ -127,74 +125,113 @@ float wvNoise(vec2 p) {
   return mix(mix(a, b, u.x), mix(c, d, u.x), u.y);
 }
 
-float waterWaveSum(vec2 wxz, float t) {
-  // Three coherent sin trains carry the dominant wave motion (kept so crests still
-  // travel along recognizable directions, which reads as ocean rather than puddle)…
-  float w1 = sin(wxz.x * 0.21 + t * 0.95);
-  float w2 = sin(wxz.y * 0.27 - t * 0.78 + 1.4);
-  float w3 = sin((wxz.x + wxz.y) * 0.39 + t * 1.30);
-  // …and an irregular noise octave replaces the previous fourth sin so two crests
-  // never repeat the same spacing twice. Centered around 0 by the *2 - 1 remap.
-  vec2 nUv = wxz * 0.34 + vec2(t * 0.11, -t * 0.08);
-  float w4 = wvNoise(nUv) * 2.0 - 1.0;
-  return w1 * 0.50 + w2 * 0.42 + w3 * 0.30 + w4 * 0.32;
+// Gerstner wave (Fournier & Reeves 1986, popularised by GPU Gems 1 ch.1).
+// Each vertex orbits in a circle in the wave-direction plane: it moves UP at
+// the crest, DOWN in the trough, AND moves IN THE WAVE DIRECTION at the
+// crest (giving "choppy" peaks) and BACKWARD in the trough.
+//
+//   phase = w · (D · P_xz) - w · speed · t        with w = 2π / wavelength
+//   dx    = Q · A · D.x · cos(phase)
+//   dy    =     A         · sin(phase)
+//   dz    = Q · A · D.z · cos(phase)
+//
+// Sign convention: phase uses MINUS speed*t (NOT plus speed*t) so the wave
+// crest moves in the +D direction over time. With plus speed*t the wave
+// would propagate in -D, which is non-intuitive — passing dir=inward and
+// expecting waves to travel outward is exactly the bug 2026-05-02 first
+// shipped with.
+//
+// Q controls steepness; sum of Q across all waves must be ≤ 1 to avoid the
+// crests folding back on themselves (visible "wave loops"). With 3 waves and
+// Q = 0.30 each, total Q = 0.90 — choppy but stable.
+vec3 gerstnerWave(vec2 worldXZ, vec2 dir, float wavelength, float amplitude, float speed, float Q, float t, float phaseOffset) {
+  float w = 6.28318530718 / wavelength;
+  float phase = w * (dir.x * worldXZ.x + dir.y * worldXZ.y) - w * speed * t + phaseOffset;
+  float c = cos(phase);
+  float s = sin(phase);
+  return vec3(
+    Q * amplitude * dir.x * c,
+    amplitude * s,
+    Q * amplitude * dir.y * c
+  );
 }
 `;
 
-// Vertex Y displacement on the water plane. Two stacked terms:
-//
-//  1. OPEN-WATER WAVES — `waveSum * baseAmp * shoreAmp`, the regular ocean
-//     surface oscillation. shoreAmp tapers wave amp to 0 at the SDF=0 line so
-//     no displacement happens right at the coast (otherwise the mesh would
-//     punch through the sand and read as flickering rims).
-//
-//  2. NEAR-SHORE SWELL — a tiny offshore lift that keeps the sea moving before
-//     it reaches the beach. It intentionally does not push inland over the sand:
-//     raising the water carrier mesh above terrain exposed the plane tessellation
-//     as triangular wash shapes.
-// Stacks with the rolling shader's later <project_vertex> parabolic warp.
+// Vertex displacement: 3-wave Gerstner ocean surface + near-shore wash swell.
+// The Gerstner sum gives REAL choppy waves (XYZ displacement, not just Y), so
+// crests look like ridge tops instead of smooth bumps. Wave amplitudes taper
+// to 0 at the analytical shore (SDF=0) so peaks can't punch through the sand.
 const VERTEX_BODY = `
 vec3 _waterWorldPos = (modelMatrix * vec4(transformed, 1.0)).xyz;
 vec2 wxz = _waterWorldPos.xz;
-float waveSum = waterWaveSum(wxz, uTime);
 
-// 1. Open-water waves — amplitude tapered to 0 at SDF=0 so wave peaks never
-// punch through the sand at the shoreline.
-//
-// TODO (Step 6 in TERRAFORMING_REFACTO_PLAN.md): the wave taper and the
-// shore wash below still consult the analytical island SDF. The visible
-// coastline is now grid-driven, so the two contours can drift apart by up to
-// ~1 m near the shore — wave amplitude tapers around the OLD curve while the
-// sand actually ends at a quantized 1m cell boundary. Mitigations:
-//   (a) move the per-tier water surface to its own mesh (already done for
-//       freshwater); the ocean plane's vertex shader still needs grid input.
-//   (b) sample the baked shoreDistanceMap via vertexTextureFetch so the taper
-//       follows the grid contour. This requires the texture to stay grid-baked
-//       when player edits ship in Step 5+.
-// Acceptable for Step 4 because the magnitude is small (~10 cm wave amp,
-// less than 1 m shore mismatch) and the foam ribbon (shoreWashSystem) that
-// would have made the mismatch visible is currently disabled.
 float distFromShoreVtx = max(islandSDF(wxz), 0.0);
-float shoreAmp = smoothstep(0.5, 14.0, distFromShoreVtx);
-float baseAmp = 0.045 + 0.18 * uWaveStrength;
-transformed.y += waveSum * baseAmp * shoreAmp;
+// Tight taper: waves ramp from 0 at the shore (SDF=0.5) to full by 3 m
+// offshore. Previous 14 m taper kept waves invisible in the camera's near-
+// coast frame; with the cozy ACNH camera the visible water is mostly within
+// 5-10 m of the shore, so a shorter taper is required for the waves to read.
+float shoreAmp = smoothstep(0.5, 3.0, distFromShoreVtx);
+float waveScale = (0.85 + 0.30 * uWaveStrength) * shoreAmp;
 
-// 2. Shore wash — v24 strict (matches the 02:54 local screenshot the user
-// remembers as good). Two oscillators overlapped, peak 12 cm, proximity 4 m.
+// Wave direction = INWARD (pointing toward island center) so every coast sees
+// waves washing UP onto its shore, not parallel-traveling past it. Without
+// this, fixed world-direction Gerstner waves crashed the south coast but
+// receded from the north coast (and any visual angle between the two read
+// as "going the wrong way"). Inward = -normalize(worldXZ), with a fallback
+// when the vertex is exactly on the island center axis.
+vec2 inward = length(wxz) > 0.01 ? -normalize(wxz) : vec2(0.0, -1.0);
+// Rotate by ±30° for waves 2 and 3 so the three wave trains spread into a
+// fan instead of stacking colinearly (which read as one unified swell).
+//   cos 30° = 0.866, sin 30° = 0.5
+vec2 inwardRot1 = vec2(0.866 * inward.x - 0.5 * inward.y,
+                        0.5   * inward.x + 0.866 * inward.y);
+vec2 inwardRot2 = vec2(0.866 * inward.x + 0.5 * inward.y,
+                       -0.5   * inward.x + 0.866 * inward.y);
+
+// Three Gerstner waves with PER-POSITION phase noise. Without the noise,
+// dir = -normalize(wxz) (pointing radially inward) gives waves whose phase
+// is dot(dir, P) = -|P| — meaning every point at the same distance from
+// origin is at the same phase. The whole ocean reads as one giant
+// concentric ring expanding/contracting toward the island. Adding wvNoise-
+// driven phase offsets per wave breaks that symmetry: adjacent areas land
+// at different phases, producing scattered local wave packets instead of
+// one global swell.
+//
+// Per-wave Q = 0.30 (sum 0.90, ≤1 for stability).
+//   Wave 1: long dominant swell, period ~5 s, A=22cm.
+//   Wave 2: medium swell rotated +30°, period ~4 s, A=15cm.
+//   Wave 3: short chop rotated -30°, period ~3 s, A=10cm.
+float pn1 = wvNoise(wxz * 0.07) * 6.28318;
+float pn2 = wvNoise(wxz * 0.09 + vec2(3.7, 5.1)) * 6.28318;
+float pn3 = wvNoise(wxz * 0.13 + vec2(8.2, 11.7)) * 6.28318;
+vec3 g1 = gerstnerWave(wxz, inward,     12.0, 0.22, 2.4,  0.30, uTime, pn1);
+vec3 g2 = gerstnerWave(wxz, inwardRot1,  8.5, 0.15, 2.13, 0.30, uTime, pn2);
+vec3 g3 = gerstnerWave(wxz, inwardRot2,  6.0, 0.10, 2.0,  0.30, uTime, pn3);
+vec3 gerstnerDisp = (g1 + g2 + g3) * waveScale;
+transformed.x += gerstnerDisp.x;
+transformed.y += gerstnerDisp.y;
+transformed.z += gerstnerDisp.z;
+
+// Wave swash cycle: same per-position phase noise (scale 0.06) and same
+// formula (uTime * 0.55, pow(sin, 0.65)) as the LAND splat shader, so the
+// water-side foam appears at exactly the same swashThreshold position the
+// LAND uses for its discard — the moving LAND/OCEAN boundary is bordered
+// on the water side by foam, on the land side by wet sand, both following
+// one shared front. No more "trait that walks alone" or gap between the
+// foam and the water — they share one varying.
 float signedShoreVtx = islandSDF(wxz);
-float washProximity = smoothstep(4.0, 0.0, abs(signedShoreVtx));
-float washPhase1 = wvNoise(wxz * 0.085) * 6.28318;
-float washPhase2 = wvNoise(wxz * 0.13 + vec2(7.0, 11.0)) * 6.28318;
-float washCycle1 = sin(uTime * 0.85 + washPhase1) * 0.5 + 0.5;
-float washCycle2 = sin(uTime * 0.55 + washPhase2 + 1.7) * 0.5 + 0.5;
-float washCycle = max(washCycle1 * washCycle1, washCycle2 * washCycle2 * 0.85);
-float washAmp = washCycle * 0.12;  // 12 cm peak (v24)
-float washY = washAmp * washProximity;
-transformed.y += washY;
+float coastPhaseSwash = wvNoise(wxz * 0.06) * 6.28318;
+float swashT = uTime * 0.55 + coastPhaseSwash;
+float swashCycle = pow(sin(swashT) * 0.5 + 0.5, 0.65);
+float swashThreshold = mix(-0.55, -1.65, swashCycle);
 
 vWaterWorldXZ = wxz;
-vWaveCrest = waveSum;
-vWashAmp = washY;
+// Normalize Gerstner Y sum to roughly [-1, +1] for the fragment crest tint.
+// Total max amplitude = 0.22 + 0.15 + 0.10 = 0.47.
+vWaveCrest = (g1.y + g2.y + g3.y) / 0.47;
+vWashAmp = 0.0;          // legacy varying
+vRunupPhase = swashCycle;
+vFrontSDF = swashThreshold;
 `;
 
 const ISLAND_SDF_GLSL = `
@@ -220,6 +257,8 @@ const FRAGMENT_HEADER = `
 varying vec2 vWaterWorldXZ;
 varying float vWaveCrest;
 varying float vWashAmp;
+varying float vRunupPhase;
+varying float vFrontSDF;
 uniform sampler2D uRiverMask;
 uniform sampler2D uShoreDistanceMap;
 uniform float uMaxShoreDistance;
@@ -379,22 +418,20 @@ riverColor = mix(riverColor, riverColor * 0.86, riverStreak2 * 0.30);
 
 vec3 baseColor = mix(oceanColor, riverColor, riverWater);
 
-// --- Caustics: visible dappled sun pattern, strongest in the shallow band -------
-// 2-layer cellular ridge → bright filaments. Tinted very-light cyan-white (NOT
-// dark/yellow) so they read as sun-on-sand patches.
+// --- Caustics: dappled sun pattern, restricted to the shallow band only.
+// Reduced 2026-05-02: previous full-strength caustics + drifting streaks
+// combined into "cloud reflection" patches across the open ocean. Now the
+// caustics fade out completely past 4m offshore (was 8m) so they only show
+// in the wet-sand band right at the shore, where they look like sun caustics
+// through clear water rather than scattered haze offshore.
 float caustic = waterCaustic(vWaterWorldXZ, uTime);
-float causticDepthFade = mix(1.0, 0.15, smoothstep(0.5, 8.0, distFromShoreM));
+float causticDepthFade = mix(1.0, 0.0, smoothstep(0.5, 4.0, distFromShoreM));
 float causticShoreFade = smoothstep(0.45, 1.35, distFromShoreM);
 baseColor += vec3(0.18, 0.22, 0.22) * caustic * causticDepthFade
   * causticShoreFade * (0.60 + 0.40 * uWaveStrength);
 
-// --- Drifting light streaks: subtle elongated highlights from two stretched
-// noise patterns at different scales drifting slowly. Gives organic elongated
-// highlights that don't tile or repeat.
-vec2 streakUv1 = vWaterWorldXZ * vec2(0.55, 0.18) + vec2(uTime * 0.09, -uTime * 0.05);
-vec2 streakUv2 = vWaterWorldXZ * vec2(0.18, 0.55) + vec2(uTime * 0.07, uTime * 0.04);
-float streak = smoothstep(0.66, 0.92, max(waterNoise(streakUv1) * 0.92, waterNoise(streakUv2)));
-baseColor += vec3(0.10, 0.14, 0.16) * streak * 0.40;
+// Drifting light streaks removed 2026-05-02 — they read as cloud reflections
+// drifting across the open ocean.
 
 // Subtle broad shimmer accent.
 baseColor += vec3(0.14, 0.18, 0.18) * shimmer * 0.22;
@@ -450,73 +487,43 @@ float frontMask = smoothstep(0.55, 0.85, frontPattern)
   * oceanFlag;
 baseColor += vec3(0.10, 0.16, 0.20) * frontMask * 0.42;
 
-// --- Shore foam: v22 — band1 + band2 + voronoi white blobs ----------------------
-float coastPhase = waterNoise(vWaterWorldXZ * 0.085) * 6.28318;
-float foamT1 = uTime * 0.85 + coastPhase;
-float foamT2 = uTime * 0.55 + 1.7 + coastPhase * 0.7;
-float band1Center = 0.18 + 0.10 * sin(foamT1);  // range 0.08-0.28 m
-float band2Center = 1.85 + 0.45 * sin(foamT2);
-float band1HalfWidth = 0.55;
-float band2HalfWidth = 0.55;
-float foamAa = max(fwidth(distFromShoreM), 0.02);
-float band1 = (1.0 - smoothstep(band1HalfWidth - foamAa, band1HalfWidth + foamAa,
-                                 abs(distFromShoreM - band1Center)));
-float band2 = (1.0 - smoothstep(band2HalfWidth - foamAa, band2HalfWidth + foamAa,
-                                 abs(distFromShoreM - band2Center))) * 0.55;
-// Inner band always-on, outer band gated by drifting noise (rarer second laps).
-float coverageNoise = waterNoise(vWaterWorldXZ * 0.16 + vec2(uTime * 0.15, -uTime * 0.10));
-float foamCoverage = smoothstep(0.52, 0.74, coverageNoise);
-float foamMask = max(band1, band2 * foamCoverage) * oceanFlag;
-// Round voronoi blobs (the white dots).
-vec2 foamBlobUv = vWaterWorldXZ * 3.2 + vec2(uTime * 0.07, -uTime * 0.05);
-float foamCellDist = waterVoronoi(foamBlobUv);
-float foamBlobs = 1.0 - smoothstep(0.05, 0.22, foamCellDist);
-foamMask *= foamBlobs;
-baseColor = mix(baseColor, vec3(0.97, 0.99, 0.99), foamMask * 0.62);
+// --- Shore foam: tight band on the OCEAN side of the dynamic boundary ----------
+// vFrontSDF (vertex-interpolated) carries the swashThreshold computed in the
+// vertex shader — exactly the same value the LAND splat shader uses for its
+// discard. So the LAND visibly ends at SDF=swashThreshold, and the foam here
+// paints just on the OCEAN side of that boundary (signedShoreFrag slightly
+// greater than swashThreshold). Result: foam hugs the moving boundary from
+// the water side; wet sand hugs it from the land side; no gap.
+float signedShoreFrag = islandSDF(vWaterWorldXZ);
+float distOutside = max(0.0, signedShoreFrag - vFrontSDF);
+float foamCrest = (1.0 - smoothstep(0.0, 0.40, distOutside));
+foamCrest *= smoothstep(0.10, 0.40, vRunupPhase) * oceanFlag;
 
-// --- Scattered offshore whitecaps -----------------------------------------------
-// Small, sparse, drifting foam patches in the deeper water (NOT tied to the SDF
-// distance — they just wander). Without these, the offshore band reads as one
-// uniform pool color; with them, the eye picks up little flecks of broken surf
-// scattered across the whole ocean for a lived-in feel.
-//
-// Three-noise gate so patches are RARE: two coarse drifts pick the rough cluster
-// locations, a fine noise picks the speckle shape inside each cluster. The
-// product collapses to tiny bright spots only where all three line up.
-// Whitecaps now scarce: tighter cluster gate (0.22, 0.34) and tighter speckle
-// gate (0.65, 0.82) so only rare bright flecks appear, not a continuous "gray
-// patches everywhere" feel that read as dirty water rather than tropical clear.
-vec2 capUvA = vWaterWorldXZ * 0.13 + vec2(uTime * 0.045, -uTime * 0.030);
-vec2 capUvB = vWaterWorldXZ * 0.085 + vec2(-uTime * 0.022, uTime * 0.038);
-vec2 capUvC = vWaterWorldXZ * 1.85 + vec2(uTime * 0.13, uTime * 0.09);
-float capCluster = waterNoise(capUvA) * waterNoise(capUvB);
-float capSpeckle = waterNoise(capUvC);
-float whitecaps = smoothstep(0.22, 0.34, capCluster) * smoothstep(0.65, 0.82, capSpeckle);
-float capDepthMask = smoothstep(3.0, 7.0, distFromShoreM)
-  * (1.0 - smoothstep(28.0, 38.0, distFromShoreM))
-  * oceanFlag;
-float whitecapMask = whitecaps * capDepthMask;
-baseColor = mix(baseColor, vec3(0.94, 0.97, 0.99), whitecapMask * 0.32);
+// Bubble breakup: 2-octave noise so the foam reads as broken surf, not a
+// clean painted band.
+vec2 bubbleUv1 = vWaterWorldXZ * 5.5 + vec2(uTime * 0.35, -uTime * 0.25);
+vec2 bubbleUv2 = vWaterWorldXZ * 11.0 + vec2(-uTime * 0.18, uTime * 0.22);
+float bubbleNoise = waterNoise(bubbleUv1) * 0.65 + waterNoise(bubbleUv2) * 0.35;
+foamCrest *= 0.50 + 0.50 * smoothstep(0.42, 0.85, bubbleNoise);
 
-// --- Wash visibility: v24 strict — pale cyan, mix 0.65 -------------------------
-// The "lumière bleue qui se balade" effect is NOT a saturated wash patch — it's
-// the foam patterns drifting and revealing the natural pale-cyan water beneath.
-// So the wash itself stays subtle, and the foam (dense voronoi blobs) does the
-// visual work via its drift-induced reveals.
-float washVisibility = smoothstep(0.005, 0.12, vWashAmp);
-vec3 washWater = vec3(0.55, 0.90, 0.96);
-baseColor = mix(baseColor, washWater, washVisibility * 0.65);
+// Pale-cyan trail offshore of the foam crest — the shallow sheet of water
+// at the breaking wave. Fades within ~1 m of the boundary.
+float trailMask = (1.0 - smoothstep(0.10, 1.2, distOutside))
+  * smoothstep(0.05, 0.20, vRunupPhase) * oceanFlag;
 
-// Foam crest at the leading edge of the wash, voronoi blob breakup.
-float washFoam = smoothstep(0.15, 0.21, vWashAmp);
-vec2 washCellUv = vWaterWorldXZ * 3.2 + vec2(uTime * 0.4, -uTime * 0.3);
-float washCellDist = waterVoronoi(washCellUv);
-washFoam *= 1.0 - smoothstep(0.05, 0.22, washCellDist);
-baseColor = mix(baseColor, vec3(0.97, 0.99, 1.00), washFoam * 0.85);
+float foamMask = foamCrest;
+baseColor = mix(baseColor, vec3(0.97, 0.99, 0.99), foamCrest * 0.85);
+baseColor = mix(baseColor, vec3(0.55, 0.88, 0.96), trailMask * 0.35);
 
-// (Wandering blue blobs removed — that effect is owned by shoreWashSystem's
-// vLocalRunup which traverses the shore ring with multiple pulses at different
-// speeds/directions, max-combined for fusion. See shoreWashSystem.ts:182-195.)
+// Offshore whitecaps removed at user request 2026-05-02 — the white speckles
+// scattered across the deep ocean read as cloud reflections / dirty water
+// instead of foam. Pure cyan ocean reads cleaner. The shore foam bands above
+// (band1/band2) still provide the visible breaking-wave look at the coast.
+float whitecapMask = 0.0;
+
+// Legacy stand-ins (alpha calc below still references these names).
+float washVisibility = trailMask;
+float washFoam = foamCrest;
 
 // --- Alpha shaping --------------------------------------------------------------
 // Shallow alpha pushed to 0.86 so the procedural sand floor (in the base color

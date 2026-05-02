@@ -31,13 +31,10 @@ describe('createIslandScene', () => {
     expect(island.scene.getObjectByName('greybox-player')).toBeDefined();
     expect(island.scene.getObjectByName('player-capsule')).toBeDefined();
     expect(island.scene.getObjectByName('water-ring')).toBeDefined();
-    expect(island.scene.getObjectByName('shore-wash-ring')).toBeDefined();
-    expect(island.shoreWash.material.name).toBe('shore-wash-material');
-    expect(island.shoreWash.material.customProgramCacheKey()).toBe('shore-wash:v27');
-    // Disabled in Step 3 round 2 — the SDF-anchored ribbon currently bleeds
-    // onto the flat-tier ground mesh. Will be re-enabled with grid anchors.
-    expect(island.shoreWash.mesh.visible).toBe(false);
-    expect(island.beachWaves.mesh.visible).toBe(false);
+    // shoreWashSystem + beachWaveSystem removed from the scene 2026-05-02
+    // (user request — could not align with grid coastline cleanly).
+    expect(island.scene.getObjectByName('shore-wash-ring')).toBeUndefined();
+    expect(island.scene.getObjectByName('beach-waves')).toBeUndefined();
     expect(island.scene.getObjectByName('main-sun')).toBeDefined();
     // Hardcoded placeholder house / shop counter / bridge / staircase / fruit trees
     // were removed during the terraforming refactor scene cleanup (Step 0). They
@@ -152,7 +149,7 @@ describe('terrain splat material', () => {
     expect(material.name).toBe('terrain-splat');
     expect(material.vertexColors).toBe(false);
     expect(material.version).toBeGreaterThan(0);
-    expect(material.customProgramCacheKey()).toBe('terrain-splat:v21:4');
+    expect(material.customProgramCacheKey()).toBe('terrain-splat:v23:4');
   });
 
   it('exposes a stable custom program cache key per tile size', () => {
@@ -175,7 +172,7 @@ describe('stylized water material', () => {
     expect(material.name).toBe('water-stylized');
     expect(material.transparent).toBe(true);
     expect(material.depthWrite).toBe(false);
-    expect(material.customProgramCacheKey()).toBe('water-stylized:v54');
+    expect(material.customProgramCacheKey()).toBe('water-stylized:v62');
   });
 
   it('updates animation uniforms without recompiling the material', () => {
@@ -187,7 +184,7 @@ describe('stylized water material', () => {
     const uniforms = material.userData.waterUniforms;
     expect(uniforms.uTime.value).toBe(3.5);
     expect(uniforms.uWaveStrength.value).toBe(0.26);
-    expect(material.customProgramCacheKey()).toBe('water-stylized:v54');
+    expect(material.customProgramCacheKey()).toBe('water-stylized:v62');
   });
 });
 

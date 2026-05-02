@@ -25,8 +25,6 @@ import { loadSurfaceTextures } from './surfaceTextureLoader';
 import { createTerrainSplatMaterial, updateTerrainSplatMaterial } from './terrainSplatMaterial';
 import { applyAcnhLighting, applyAcnhLightingRecursive } from './acnhLighting';
 import { buildCliffSideMesh } from './terrain/cliffSideMeshBuilder';
-import { createBeachWaveSystem, updateBeachWaveSystem, type BeachWaveSystem } from './beachWaveSystem';
-import { createShoreWashSystem, updateShoreWashSystem, type ShoreWashSystem } from './shoreWashSystem';
 import { createWaterStylizedMaterial, updateWaterStylizedMaterial } from './waterStylizedMaterial';
 import { createPlayerSurfaceDecals, type PlayerSurfaceDecalState } from './playerSurfaceDecals';
 import { createSkySystem, updateSkySystem, type SkySystem } from './skySystem';
@@ -34,7 +32,6 @@ import { computeTimeOfDay } from './dayNightCycle';
 
 export interface IslandScene {
   ambient: THREE.HemisphereLight;
-  beachWaves: BeachWaveSystem;
   camera: THREE.PerspectiveCamera;
   cliffSideWalls: THREE.Group;
   fog: THREE.Fog;
@@ -46,7 +43,6 @@ export interface IslandScene {
   freshwater: THREE.Mesh<THREE.BufferGeometry, THREE.MeshStandardMaterial>;
   waterfalls: THREE.Mesh<THREE.BufferGeometry, THREE.MeshStandardMaterial>;
   scene: THREE.Scene;
-  shoreWash: ShoreWashSystem;
   sky: SkySystem;
   sun: THREE.DirectionalLight;
   surfaceDecals: PlayerSurfaceDecalState;
@@ -153,21 +149,15 @@ export function createIslandScene(): IslandScene {
   // green bars floating along the banks. The module is kept for a future
   // grid-aware re-implementation. See memory/structure_gotchas.md.
 
-  // Both shore-wave systems hidden during the Step 0→4 refactor. They
-  // anchor on `sampleShoreAnchors()` (analytical SDF), so re-enabling either
-  // would put the foam ribbon on the OLD curve while the visible coastline
-  // is now grid-driven. The result was patches of fake foam appearing inland.
-  // Step 6 of TERRAFORMING_REFACTO_PLAN.md re-anchors them on
-  // `terrainGrid.forEachLandOceanEdge()` (helper added in Step 4) and re-
-  // enables them. Until then the ocean reads as flatter at the coast (a known
-  // visual regression that the user has accepted).
-  const beachWaves = createBeachWaveSystem();
-  beachWaves.mesh.visible = false;
-  scene.add(beachWaves.mesh);
-
-  const shoreWash = createShoreWashSystem();
-  shoreWash.mesh.visible = false;
-  scene.add(shoreWash.mesh);
+  // Shore-wave systems (beachWaveSystem + shoreWashSystem) removed at user
+  // request 2026-05-02. Their analytical SDF anchors were ~0.5 m off the
+  // grid-quantized visible coastline, and grid-aligned anchors produced
+  // visible polygonal artefacts (perpendicular normals at corner cells made
+  // the wash strip read as cyan triangles tracing the stair-step).
+  // Re-introduction needs a polygon-walk anchor builder with smoothed corner
+  // normals — deferred until the visible LAND mesh itself is smoothed.
+  // The source files src/scene/{beachWaveSystem,shoreWashSystem}.ts are
+  // kept for reference but no longer instantiated.
 
   const obstacles: CircleObstacle[] = [];
   const rollingObjects: RollingObject[] = [];
@@ -245,7 +235,6 @@ export function createIslandScene(): IslandScene {
 
   return {
     ambient,
-    beachWaves,
     camera,
     cliffSideWalls,
     fog,
@@ -257,7 +246,6 @@ export function createIslandScene(): IslandScene {
     playerBody,
     rollingObjects,
     scene,
-    shoreWash,
     sky,
     sun,
     surfaceDecals,
@@ -420,8 +408,6 @@ export function tickIslandScene(
   updateWaterStylizedMaterial(island.water.material, elapsed, params.waveHeight);
   updateFreshwaterStylizedMaterial(island.freshwater.material, elapsed);
   updateTerrainSplatMaterial(island.ground.material, elapsed);
-  updateBeachWaveSystem(island.beachWaves, elapsed);
-  updateShoreWashSystem(island.shoreWash, elapsed);
 
   const lighting = computeTimeOfDay(params.timeOfDay);
 

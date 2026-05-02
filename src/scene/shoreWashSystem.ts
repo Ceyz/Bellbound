@@ -23,14 +23,18 @@ import { rollingConfig, sharedRollingUniforms } from './rollingWorld';
  * coast isn't visible. A 144-anchor ring is ~288 verts / 288 tris — negligible cost.
  */
 
-/** Number of anchors sampled along the shoreline for the ring mesh. Bumped to 720
- *  to keep each segment roughly 30-40 cm long, reducing the polygonal
- *  "flat sides" visible on the wash ribbon at the cozy camera distance. */
+/** Number of anchors sampled along the analytical SDF shoreline. 1440 keeps
+ *  the wash-ribbon strip smooth (~17 cm spacing) at the cozy camera distance. */
 const SHORE_ANCHOR_COUNT = 1440;
 /** Cross-shore subdivisions: enough vertices for visible water-surface deformation. */
 const SHORE_CROSS_SECTION_COUNT = 12;
-/** Meters the ribbon extends inland from the SDF=0 line (wave run-up on sand). */
-const INLAND_OFFSET_METERS = 2.35;
+/** Meters the ribbon extends inland from the SDF=0 line (wave run-up on sand).
+ *  Tightened from 2.35 → 1.2 m on 2026-05-02: with the post-refactor visible
+ *  coastline grid-quantized at 1 m, the analytical anchor sits up to ~0.5 m off
+ *  the visible shore, so a 2.35 m inland strip painted ~1.85 m of sand visibly
+ *  with foam tint ("white wandering on the sand"). 1.2 m covers the grid
+ *  mismatch (~0.5 m) plus a short wave run-up without flooding the sand. */
+const INLAND_OFFSET_METERS = 1.2;
 /** Meters the ribbon extends offshore from the SDF=0 line (blends into ocean). */
 const OFFSHORE_OFFSET_METERS = 3.10;
 const SHORELINE_V = INLAND_OFFSET_METERS / (INLAND_OFFSET_METERS + OFFSHORE_OFFSET_METERS);

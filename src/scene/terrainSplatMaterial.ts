@@ -94,7 +94,7 @@ export function createTerrainSplatMaterial(options: TerrainSplatOptions): THREE.
       .replace('#include <map_fragment>', FRAGMENT_SPLAT_BODY);
   };
 
-  material.customProgramCacheKey = () => `terrain-splat:v21:${tileSizeMeters}`;
+  material.customProgramCacheKey = () => `terrain-splat:v23:${tileSizeMeters}`;
   material.needsUpdate = true;
 
   return material;
@@ -198,11 +198,29 @@ vec2 splatUv = (vTerrainWorldXZ + uTerrainExtents * 0.5) / uTerrainExtents;
 // once the bake uses higher precision (R16 or signed-distance JFA) and the
 // shader's shoreCoverage is recomputed against grid-cell granularity.
 float signedShoreMeters = terrainIslandSDF(vTerrainWorldXZ);
-// Hard offshore cull: fragments past SDF=0 are discarded so the underwater sand
-// shelf cannot leak its triangulation under the transparent water.
-if (signedShoreMeters > 0.20) discard;
+
+// --- Dynamic shore boundary (wave wash on the visible coast) --------------
+// The LAND mesh's visible boundary is animated: at the wave's PEAK the
+// boundary retreats inland (water washes UP the beach), at the wave's
+// TROUGH it returns offshore (water recedes). Per-position phase noise
+// (scale 0.06, identical to the water shader's swashCycle) gives each
+// segment of the coast its own timing — no global pulsing ring.
+//
+// This replaces the previous static "greater than -0.80" discard. The
+// "trait that walks alone" / "gap between wave and water" the user
+// reported was caused by drawing a foam line on the static sand while
+// the water tried to bump up separately — now there is a single moving
+// water/sand boundary, no extra elements that can drift apart.
+float coastPhaseSwash = terrainNoise(vTerrainWorldXZ * 0.06) * 6.28318;
+float swashTSplat = uTime * 0.55 + coastPhaseSwash;
+float swashCycle = pow(sin(swashTSplat) * 0.5 + 0.5, 0.65);
+// Threshold animates: -0.55 (wave receded, more LAND visible)
+// to -1.65 (wave at peak, LAND retreated inland by 1.10 m).
+float swashThreshold = mix(-0.55, -1.65, swashCycle);
+
+if (signedShoreMeters > swashThreshold + 0.4) discard;
 float shoreAa = clamp(fwidth(signedShoreMeters), 0.02, 0.15);
-float shoreCoverage = 1.0 - smoothstep(-shoreAa, shoreAa, signedShoreMeters);
+float shoreCoverage = 1.0 - smoothstep(swashThreshold - shoreAa, swashThreshold + shoreAa, signedShoreMeters);
 
 vec4 splat = texture2D(uSplatMap, splatUv);
 float ao = texture2D(uAoMap, splatUv).r;
@@ -346,47 +364,18 @@ if (pathUv.x >= 0.0 && pathUv.x <= 1.0 && pathUv.y >= 0.0 && pathUv.y <= 1.0) {
 surfaceColor *= 1.0 - ao * 0.4;
 surfaceColor = mix(surfaceColor, surfaceColor * vec3(0.55, 0.42, 0.32), cliffEdge * 0.6);
 
-// --- Animated wet-sand wash with leading foam crest -----------------------------
-// Replaces the previous globally-phased wash (sin(uTime * 0.95) shared by every
-// shore fragment around the island) which read as one synchronized ring lapping
-// in and out everywhere at once. Now: per-position phase shift via a low-freq
-// noise of world XZ — segments separated by ~12 m run at unrelated phases, so
-// the surf reads as discrete waves crashing at scattered points along the coast.
-//
-// Three layers:
-//  1. Wet-sand body — darker, slightly cooler, fades from peak at the shoreline
-//     out to wetZoneDepth inland.
-//  2. Wet-sand TRAIL — a slower-decaying "memory" of where the wash just was, so
-//     the sand keeps a damp echo behind the receding wave instead of snapping
-//     dry the moment the crest passes.
-//  3. Leading foam crest — a thin white line at distInland ≈ wetZoneDepth, only
-//     visible while the wave is in its push-in phase (not on the retreat). This
-//     is what gives the visible "wave crashing onto sand" read; without it the
-//     SDF discard silhouette reads as a clean white border line.
-//
-// Same coastPhase formula (and 0.085 spatial scale) as waterStylizedMaterial.ts
-// so wash crest on the sand and foam bands offshore line up at any coast point.
-float distInland = max(0.0, -signedShoreMeters);
-float coastPhase = terrainNoise(vTerrainWorldXZ * 0.085) * 6.28318;
-float wetT = uTime * 0.85 + coastPhase;
-float wetCycle = sin(wetT) * 0.5 + 0.5;
-// Ease-out so wash pushes in fast (small wetCycle change at the start of the
-// half-cycle) and pulls back slowly — matches real surf timing.
-float wetMotion = wetCycle * wetCycle;
-// Bigger swing so peaks read as visible inland intrusion, not a slow gradient.
-float wetZoneDepth = mix(0.20, 1.40, wetMotion);
-// Offshore fragments are already discarded above, so every fragment reaching this
-// line is on land — landSand is just pickSand. Keeping the local name for clarity
-// against the wet-mask consumers below.
+// --- Wet sand near the (animated) shore boundary --------------------------------
+// The visible LAND boundary already moves dynamically (via the swashThreshold
+// discard above) — the user perceives that as the water washing in/out. Here
+// we just darken the sand slightly within ~1 m INLAND of the current dynamic
+// boundary so freshly-uncovered sand reads as wet (cooler, slightly darker)
+// for a moment before drying back. No painted foam line — the moving
+// LAND/OCEAN edge IS the visible swash.
 float landSand = pickSand;
-float wetMask = smoothstep(wetZoneDepth, 0.0, distInland) * landSand;
-surfaceColor *= mix(1.0, 0.65, wetMask);
+float distFromBoundaryInland = max(0.0, swashThreshold - signedShoreMeters);
+float wetMask = (1.0 - smoothstep(0.0, 1.0, distFromBoundaryInland)) * landSand;
+surfaceColor *= mix(1.0, 0.72, wetMask);
 surfaceColor = mix(surfaceColor, surfaceColor * vec3(0.86, 0.92, 1.00), wetMask * 0.55);
-
-// (Previous fake "leading foam crest line" removed. The actual wave intrusion
-// is drawn by the water shader pushing its vertices ABOVE the sand altitude
-// near the shoreline — a painted foam line on the sand was an unnatural shortcut
-// that didn't match the water motion.)
 
 // Soft general damp zone independent of the breathing wave (always-wet line right
 // where land meets sea).

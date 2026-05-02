@@ -11,12 +11,18 @@ import type { TerrainGrid } from './TerrainGrid';
  *   - LAND tier-N → OCEAN edges are skipped (OCEAN is owned by the water plane
  *     and the splat shader's offshore-discard, not by a vertical wall)
  *
- * Produces `cliff-walls`, the painted vertical rock face. The grass overhang
- * lip mesh that previously sat on top of every edge has been removed: it
- * rendered as a flat green rectangle that read as "tape stuck on the cliff
- * edge" rather than a curl-over silhouette. The real fix lives elsewhere
+ * Two output meshes:
+ *   - `cliff-walls` — stratified rock face with bleeds + polygonOffset.
+ *   - `river-bank-walls` — packed brown earth (dirtPath) with no bleeds, top
+ *     recessed 1 cm below LAND. Required to mask the ocean plane that would
+ *     otherwise leak through the LinearFilter river-mask transition strip and
+ *     read as wavy/foamy texture wrapping the river edge.
+ *
+ * The grass overhang lip mesh that previously sat on top of every edge has
+ * been removed: it rendered as a flat green rectangle that read as "tape
+ * stuck on the cliff edge" rather than a curl-over silhouette. The real fix
  * (bevel geometry baked into the cliff face, or a shader-based top-edge
- * transition) and is deferred until after generator v2.
+ * transition) is deferred until after generator v2.
  */
 
 const HORIZONTAL_TILE_METERS = 4;
@@ -41,17 +47,39 @@ export function buildCliffSideMesh(
   });
   cliffWallMaterial.name = 'cliff-wall-material';
 
+  // LAND-FRESHWATER walls (river / pond banks): brown earth texture (dirtPath),
+  // no bleeds, no polygonOffset, top recessed 1 cm below LAND. The wall masks
+  // two artefacts the wall-less version exposed:
+  //   1. The ocean plane at y = -0.20 sits BETWEEN the LAND grass top (y = 0)
+  //      and the FW surface (y = -0.30). The riverMask discard in the ocean
+  //      shader uses LinearFilter + `> 0.5` threshold, leaving a ~15 cm
+  //      transition strip at every river edge where the ocean is NOT yet
+  //      discarded — its wave / foam / whitecap pattern peeks through as a
+  //      "wavy rim" around the river at oblique angles.
+  //   2. From low camera angles the eye sees the empty 30 cm gap directly,
+  //      reading as a sharp shadow pit instead of an earthen bank.
+  // dirtPath (warm brown) reads as a packed-earth riverbank — the user
+  // explicitly asked for "un mur marron comme de la terre" rather than the
+  // stratified rock cliffSide texture or the wet-sand riverbed texture.
+  const riverBankMaterial = new THREE.MeshStandardMaterial({
+    map: textures.dirtPath,
+    roughness: 0.94,
+    side: THREE.DoubleSide,
+  });
+  riverBankMaterial.name = 'river-bank-material';
+
   const cliffGeometries: THREE.BufferGeometry[] = [];
+  const riverBankGeometries: THREE.BufferGeometry[] = [];
 
   grid.forEachTierDiscontinuity((lowerCx, lowerCz, _upperCx, _upperCz, dx, dz, drop) => {
     const lowerCell = grid.getCell(lowerCx, lowerCz);
     const isWaterBank = lowerCell.surface === 3 /* FRESHWATER */;
 
-    // Skip walls entirely for FRESHWATER edges. The visible drop from grass to
-    // water comes from the LAND quad ending at the cell boundary at y = tierTop
-    // and the opaque water surface plane sitting at y = tierTop - 0.30 inside
-    // the FW cell — from oblique angles this reads as a clean vertical step.
-    if (isWaterBank) return;
+    if (isWaterBank) {
+      const bankGeometry = buildWallQuadGeometry(grid, lowerCx, lowerCz, dx, dz, drop, false);
+      riverBankGeometries.push(bankGeometry);
+      return;
+    }
 
     const wallGeometry = buildWallQuadGeometry(grid, lowerCx, lowerCz, dx, dz, drop, true);
     cliffGeometries.push(wallGeometry);
@@ -61,6 +89,15 @@ export function buildCliffSideMesh(
     const merged = mergeBufferGeometries(cliffGeometries);
     const mesh = new THREE.Mesh(merged, cliffWallMaterial);
     mesh.name = 'cliff-walls';
+    mesh.castShadow = false;
+    mesh.receiveShadow = true;
+    group.add(mesh);
+  }
+
+  if (riverBankGeometries.length > 0) {
+    const merged = mergeBufferGeometries(riverBankGeometries);
+    const mesh = new THREE.Mesh(merged, riverBankMaterial);
+    mesh.name = 'river-bank-walls';
     mesh.castShadow = false;
     mesh.receiveShadow = true;
     group.add(mesh);

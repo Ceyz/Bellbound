@@ -1,4 +1,5 @@
 import { ISLAND_TERRAIN_DEPTH, ISLAND_TERRAIN_WIDTH } from '../player/movement';
+import type { TerrainGrid } from './terrain/TerrainGrid';
 
 /**
  * Signed distance field describing the playable island silhouette.
@@ -117,6 +118,64 @@ export interface ShoreAnchor {
  * sample density roughly proportional to the local circumference, giving even visual
  * spacing of waves around the island.
  */
+/**
+ * Grid-aligned shore anchor sampler. Yields anchors AT the visible grid
+ * LAND/FRESHWATER ↔ OCEAN edges (the stair-step coastline the player sees),
+ * not on the smooth analytical ellipse. Required by the shoreWash + beachWave
+ * systems so their foam ribbons hug the visible shore instead of drifting
+ * ~0.5-1 m offshore (which exposes the grid stair-step under unpainted water).
+ *
+ * Per grid edge, emits `subdivisions` anchors evenly spaced along the edge's
+ * tangent — keeps the wash-ribbon mesh dense enough that the shader's
+ * high-frequency noise patterns (150 cycles around the perimeter) read
+ * smoothly. Default 4 subdivisions × ~280 grid edges ≈ 1120 anchors,
+ * comparable to the previous 1440-anchor analytical sampler.
+ *
+ * Anchors are sorted by polar angle around (0, 0) so they form a CCW closed
+ * loop suitable for the wash-ribbon strip indexing. This works for the
+ * default perturbed-ellipse island (roughly convex). Concave inlets carved
+ * by the player can produce out-of-order anchors that zigzag the ribbon —
+ * acceptable until terraforming carves real coves.
+ */
+export function sampleGridShoreAnchors(
+  grid: TerrainGrid,
+  subdivisions = 4,
+): ShoreAnchor[] {
+  type RawEdge = { x: number; z: number; nx: number; nz: number; angle: number };
+  const edges: RawEdge[] = [];
+
+  grid.forEachLandOceanEdge((inlandCx, inlandCz, _oCx, _oCz, dx, dz) => {
+    const cellSize = grid.cellSize;
+    const inlandCenterX = grid.originX + (inlandCx + 0.5) * cellSize;
+    const inlandCenterZ = grid.originZ + (inlandCz + 0.5) * cellSize;
+    // Edge midpoint = inland cell center + half a cell toward the ocean cell.
+    const midX = inlandCenterX + dx * 0.5 * cellSize;
+    const midZ = inlandCenterZ + dz * 0.5 * cellSize;
+    // Tangent perpendicular to (dx, dz), 90° CCW: (-dz, dx).
+    const tx = -dz;
+    const tz = dx;
+    // Subdivide the 1m edge into N anchors evenly spaced from -0.5m to +0.5m
+    // along the tangent (relative to the edge midpoint).
+    for (let i = 0; i < subdivisions; i += 1) {
+      const t = (i + 0.5) / subdivisions - 0.5; // [-0.5, +0.5)
+      const x = midX + tx * t * cellSize;
+      const z = midZ + tz * t * cellSize;
+      edges.push({ x, z, nx: dx, nz: dz, angle: Math.atan2(z, x) });
+    }
+  });
+
+  edges.sort((a, b) => a.angle - b.angle);
+
+  return edges.map((e) => ({
+    x: e.x,
+    z: e.z,
+    normalX: e.nx,
+    normalZ: e.nz,
+    tangentX: -e.nz,
+    tangentZ: e.nx,
+  }));
+}
+
 export function sampleShoreAnchors(count: number): ShoreAnchor[] {
   const anchors: ShoreAnchor[] = [];
 
