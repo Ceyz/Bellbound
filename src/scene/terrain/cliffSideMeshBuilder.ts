@@ -79,44 +79,74 @@ float cliffNoise(vec2 p) {
 }
 `;
 
-// ACNH-style cliff fragment:
-//   - 3 horizontal strata defined by sine of world-Y so the wall reads as
-//     stacked rock layers, not the previous vertical "wood plank" panels
-//     that came from a sin(floor(along) * ...) modulation
-//   - strong AO foot shadow in the bottom 30% (was 36% then 0..0.34, now
-//     0..0.55 with a deeper darkening so the cliff base reads as planted)
-//   - top crest fades to grass color via cliffGrass texture sample, hiding
-//     the previously-failed overlay-strip lip with an in-shader blend
-//   - lateral grooves kept light and only at cell edges so concave corners
-//     stay readable
+// ACNH-style cliff fragment, randomised:
+//   - color varies via 3 octaves of FBM noise (replaces the previous sin
+//     strata band that read as a single hard horizontal line in the middle
+//     of every cliff face — the user's "trait au milieu" complaint)
+//   - 3 vertical fissures at deterministic-but-random world-X positions,
+//     each with its own width and depth — gives the wall organic cracks
+//     instead of a uniform painted block
+//   - grass crest top edge jittered by noise so the lip silhouette is wavy,
+//     not a perfectly horizontal line
+//   - strong AO foot shadow in the bottom 55% kept for grounding
+//
+// Everything keys off `along` (world-X or world-Z depending on wall normal)
+// and `vCliffWorldPos.y` so neighbouring wall segments meet seamlessly with
+// no visible cell boundary.
 const CLIFF_FRAGMENT_BODY = /* glsl */`
 #ifdef USE_MAP
   {
     vec3 n = normalize(vCliffWorldNormal);
     float along = abs(n.x) > abs(n.z) ? vCliffWorldPos.z : vCliffWorldPos.x;
-    float local = fract(along);
     float height01 = clamp(vMapUv.y, 0.0, 1.0);
 
-    float strata = sin(vCliffWorldPos.y * 4.4 + cliffNoise(vec2(along * 0.7, vCliffWorldPos.y * 0.4)) * 1.3) * 0.5 + 0.5;
-    float strataBands = smoothstep(0.40, 0.72, strata);
-    float edgeGroove = 1.0 - smoothstep(0.04, 0.13, min(local, 1.0 - local));
+    // 3-octave FBM color variation: low-frequency blobs (n1) carry the
+    // overall warm/dark balance, mid (n2) breaks them up into chunks, high
+    // (n3) adds grain. No sin, no strata bands.
+    float n1 = cliffNoise(vec2(along * 0.45, vCliffWorldPos.y * 0.85));
+    float n2 = cliffNoise(vec2(along * 1.30 + 17.3, vCliffWorldPos.y * 1.40 - 4.2));
+    float n3 = cliffNoise(vec2(along * 3.90 - 9.1, vCliffWorldPos.y * 2.60 + 2.8));
+    float colorVar = clamp(n1 * 0.55 + n2 * 0.30 + n3 * 0.15, 0.0, 1.0);
+
+    // 3 vertical fissures. Each fissure k picks a random X-offset and width
+    // from a noise-derived seed so the same wall always has the same cracks.
+    // The fissure darkens cliffColor in a smooth band so the edges look
+    // worn, not painted-on.
+    float fissure = 0.0;
+    for (int k = 0; k < 3; k++) {
+      float fk = float(k);
+      float seedX  = cliffNoise(vec2(fk * 7.31, fk * 11.7)) * 9.0;
+      float fx     = floor(along * 0.45 + seedX) / 0.45;
+      float offset = (cliffNoise(vec2(floor(along * 0.45 + seedX), fk * 3.7)) - 0.5) * 1.6;
+      float center = fx + offset;
+      float widthSeed = cliffNoise(vec2(floor(along * 0.45 + seedX) + 13.0, fk * 5.1));
+      float halfWidth = 0.025 + widthSeed * 0.060;
+      float dist = abs(along - center);
+      float core = smoothstep(halfWidth, 0.0, dist);
+      // Fade the fissure toward the very top so it doesn't crash through
+      // the grass crest (a vertical crack reaching into the grass band
+      // looks like a tear, not erosion).
+      float topFade = 1.0 - smoothstep(0.86, 1.0, height01);
+      fissure = max(fissure, core * topFade * (0.35 + widthSeed * 0.25));
+    }
+
     float bottomShadow = 1.0 - smoothstep(0.08, 0.55, height01);
-    float topLight = smoothstep(0.62, 1.0, height01);
+    float topLight     = smoothstep(0.62, 1.0, height01);
 
     vec3 darkEarth = vec3(0.34, 0.19, 0.11);
     vec3 warmEarth = vec3(0.74, 0.46, 0.30);
-    vec3 cliffColor = mix(darkEarth, warmEarth, 0.55 + strataBands * 0.30);
-    cliffColor *= max(0.0, 1.0 - bottomShadow * 0.42 - edgeGroove * 0.18);
+    vec3 cliffColor = mix(darkEarth, warmEarth, 0.42 + colorVar * 0.46);
+    cliffColor *= max(0.0, 1.0 - bottomShadow * 0.42 - fissure);
     cliffColor += vec3(0.060, 0.040, 0.022) * topLight;
 
-    // Top crest blend: a thin grass lip at the very top of the wall,
-    // ~7% of the cliff height — on a 1.4m tier that lands at ~10 cm,
-    // matching the "just barely overflows" silhouette ACNH cliffs have.
-    // A wider blend (we tried 14%) reads as the upper THIRD of the cliff
-    // being green, which is wrong — the lip should be a band, not a stain.
-    vec2 grassUv = vCliffWorldPos.xz / uCliffGrassTileSize;
+    // Grass crest blend with a noisy top boundary so the lip silhouette is
+    // not a perfectly straight line. We jitter the crest threshold per
+    // world-X by ±3 cm equivalent, so adjacent wall fragments transition
+    // to grass at slightly different heights — reads as natural overhang.
+    vec2 grassUv    = vCliffWorldPos.xz / uCliffGrassTileSize;
     vec3 grassColor = texture2D(uCliffGrassTex, grassUv).rgb;
-    float crest = smoothstep(0.93, 1.0, height01);
+    float crestJitter = (cliffNoise(vec2(along * 1.7, 0.0)) - 0.5) * 0.04;
+    float crest       = smoothstep(0.91 + crestJitter, 1.0 + crestJitter, height01);
     cliffColor = mix(cliffColor, grassColor * 0.88, crest);
 
     diffuseColor.rgb *= cliffColor;
@@ -698,57 +728,103 @@ function buildWallSideClosureGeometries(
   const lowerY = grid.cellHeight(lowerCx, lowerCz);
   const upperY = lowerY + drop;
 
+  // Skip a closure triangle when the perpendicular neighbour cell has any
+  // wall meeting this corner. Two cases:
+  //   1. perpendicular cell is FW at the same height → a perpendicular
+  //      river bank continues around the corner, its slope fills the gap
+  //   2. perpendicular cell is at a different cellHeight → there is a
+  //      tier-drop wall (cascade or cliff) at that boundary, which covers
+  //      the closure triangle's footprint
+  //
+  // Without this, the closure triangle at the cascade-side end of a pond
+  // bank pokes out as a flat brown facet next to the cascade — visible as
+  // the user's "triangle marron en haut a gauche de la riviere" at pond
+  // and dug-river corners.
+  const lowerSurface = grid.getSurface(lowerCx, lowerCz);
+  const isFwBank = lowerSurface === Surface.FRESHWATER;
+  const lowerH = grid.cellHeight(lowerCx, lowerCz);
+  const perpHandled = (cx: number, cz: number): boolean => {
+    if (!grid.cellInBounds(cx, cz)) return false;
+    if (grid.getSurface(cx, cz) === Surface.FRESHWATER) return true;
+    const h = grid.cellHeight(cx, cz);
+    if (Number.isNaN(h)) return false;
+    return Math.abs(h - lowerH) > 0.01;
+  };
+
   const tris: THREE.BufferGeometry[] = [];
 
   if (dx === 1) {
-    // East-facing wall: top at x=x1 (boundary), bottom at x=x1-slope (inside lower cell).
-    // Perpendicular extent in Z. Closures at z=z0 (south end) and z=z1 (north end).
-    tris.push(buildSideTriangle(
-      x1, upperY, z0,
-      x1, lowerY, z0,
-      x1 - slopeOffset, lowerY, z0,
-    ));
-    tris.push(buildSideTriangle(
-      x1, upperY, z1,
-      x1 - slopeOffset, lowerY, z1,
-      x1, lowerY, z1,
-    ));
+    // East-facing wall: closures at z=z0 (cz-1 perp) and z=z1 (cz+1 perp).
+    const skip0 = isFwBank && perpHandled(lowerCx, lowerCz - 1);
+    const skip1 = isFwBank && perpHandled(lowerCx, lowerCz + 1);
+    if (!skip0) {
+      tris.push(buildSideTriangle(
+        x1, upperY, z0,
+        x1, lowerY, z0,
+        x1 - slopeOffset, lowerY, z0,
+      ));
+    }
+    if (!skip1) {
+      tris.push(buildSideTriangle(
+        x1, upperY, z1,
+        x1 - slopeOffset, lowerY, z1,
+        x1, lowerY, z1,
+      ));
+    }
   } else if (dx === -1) {
-    // West-facing wall: top at x=x0, bottom at x=x0+slope.
-    tris.push(buildSideTriangle(
-      x0, upperY, z0,
-      x0 + slopeOffset, lowerY, z0,
-      x0, lowerY, z0,
-    ));
-    tris.push(buildSideTriangle(
-      x0, upperY, z1,
-      x0, lowerY, z1,
-      x0 + slopeOffset, lowerY, z1,
-    ));
+    // West-facing wall: same perpendicular axis.
+    const skip0 = isFwBank && perpHandled(lowerCx, lowerCz - 1);
+    const skip1 = isFwBank && perpHandled(lowerCx, lowerCz + 1);
+    if (!skip0) {
+      tris.push(buildSideTriangle(
+        x0, upperY, z0,
+        x0 + slopeOffset, lowerY, z0,
+        x0, lowerY, z0,
+      ));
+    }
+    if (!skip1) {
+      tris.push(buildSideTriangle(
+        x0, upperY, z1,
+        x0, lowerY, z1,
+        x0 + slopeOffset, lowerY, z1,
+      ));
+    }
   } else if (dz === 1) {
-    // North-facing wall: top at z=z1, bottom at z=z1-slope. Perpendicular extent in X.
-    tris.push(buildSideTriangle(
-      x0, upperY, z1,
-      x0, lowerY, z1,
-      x0, lowerY, z1 - slopeOffset,
-    ));
-    tris.push(buildSideTriangle(
-      x1, upperY, z1,
-      x1, lowerY, z1 - slopeOffset,
-      x1, lowerY, z1,
-    ));
+    // North-facing wall: closures at x=x0 (cx-1 perp) and x=x1 (cx+1 perp).
+    const skip0 = isFwBank && perpHandled(lowerCx - 1, lowerCz);
+    const skip1 = isFwBank && perpHandled(lowerCx + 1, lowerCz);
+    if (!skip0) {
+      tris.push(buildSideTriangle(
+        x0, upperY, z1,
+        x0, lowerY, z1,
+        x0, lowerY, z1 - slopeOffset,
+      ));
+    }
+    if (!skip1) {
+      tris.push(buildSideTriangle(
+        x1, upperY, z1,
+        x1, lowerY, z1 - slopeOffset,
+        x1, lowerY, z1,
+      ));
+    }
   } else {
-    // dz === -1. South-facing wall: top at z=z0, bottom at z=z0+slope.
-    tris.push(buildSideTriangle(
-      x0, upperY, z0,
-      x0, lowerY, z0 + slopeOffset,
-      x0, lowerY, z0,
-    ));
-    tris.push(buildSideTriangle(
-      x1, upperY, z0,
-      x1, lowerY, z0,
-      x1, lowerY, z0 + slopeOffset,
-    ));
+    // dz === -1. South-facing wall: same perpendicular axis as dz===1.
+    const skip0 = isFwBank && perpHandled(lowerCx - 1, lowerCz);
+    const skip1 = isFwBank && perpHandled(lowerCx + 1, lowerCz);
+    if (!skip0) {
+      tris.push(buildSideTriangle(
+        x0, upperY, z0,
+        x0, lowerY, z0 + slopeOffset,
+        x0, lowerY, z0,
+      ));
+    }
+    if (!skip1) {
+      tris.push(buildSideTriangle(
+        x1, upperY, z0,
+        x1, lowerY, z0,
+        x1, lowerY, z0 + slopeOffset,
+      ));
+    }
   }
 
   return tris;

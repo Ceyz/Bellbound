@@ -399,6 +399,31 @@ if (import.meta.env.DEV) {
     scheduleDevLocalSave();
     return null;
   };
+  // Diagnose why a build-mode tool refuses a cell. Returns the chain of
+  // checks the tool runs (structure block, surface, beach, tier-mass) so we
+  // can see exactly which gate is rejecting cliff/ground digs.
+  (window as unknown as { __BELLBOUND_DEBUG_DIAGNOSE_TOOL__?: (kind: string, cx: number, cz: number) => Record<string, unknown> }).__BELLBOUND_DEBUG_DIAGNOSE_TOOL__ = (kind, cx, cz) => {
+    const grid = terraformGrid;
+    if (!grid.cellInBounds(cx, cz)) return { in_bounds: false };
+    const surface = grid.getSurface(cx, cz);
+    const tier = grid.getTier(cx, cz);
+    const beach = grid.isBeachCell(cx, cz);
+    const struct = canEditCellUnderStructures(cx, cz, getBuiltStructures());
+    const out: Record<string, unknown> = { kind, cx, cz, surface, tier, beach, no_structure_block: struct };
+    if (kind === 'water_dig') {
+      const surfaceOk = surface === Surface.LAND || surface === Surface.FRESHWATER;
+      out.surface_ok = surfaceOk;
+      out.beach_ok = !(surface === Surface.LAND && beach);
+      if (surface === Surface.LAND) {
+        out.tier_mass_ok = wouldEditMaintainTierMass(grid, cx, cz, Surface.FRESHWATER, tier);
+      }
+    } else if (kind === 'cliff_raise') {
+      out.surface_ok = surface === Surface.LAND;
+      const newTier = (tier + 1) as Tier;
+      out.tier_mass_ok = wouldEditMaintainTierMass(grid, cx, cz, Surface.LAND, newTier);
+    }
+    return out;
+  };
 }
 
 // AC-style terraforming view: while a tool is active, flatten the world (kill

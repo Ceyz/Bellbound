@@ -842,9 +842,19 @@ export function wouldEditMaintainTierMass(
   newSurface: Surface,
   newTier: Tier,
 ): boolean {
+  // Compare error count BEFORE and AFTER the edit, allow if it does not
+  // worsen the grid. The previous strict version (`length === 0`) silently
+  // locked every tool the moment any thin-tier component existed in the
+  // grid — typically from older saves predating the 2×2 rule, or from
+  // sequences of legal edits that transiently produced a 1-wide spine
+  // before later rounding it out. The visible symptom was "I can't dig
+  // water anywhere even on a huge plateau" because canApply validates the
+  // entire grid, not just the local impact of the edit.
+  const before = validateTierMass(grid).length;
   const overrides = new Map<number, { surface: Surface; tier: Tier }>();
   overrides.set(cz * grid.width + cx, { surface: newSurface, tier: newTier });
-  return validateTierMass(grid, overrides).length === 0;
+  const after = validateTierMass(grid, overrides).length;
+  return after <= before;
 }
 
 // ─── Singleton ───────────────────────────────────────────────────────────
