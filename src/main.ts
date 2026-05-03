@@ -102,6 +102,13 @@ declare global {
      * valid LAND tier T → LAND tier T+1 connection.
      */
     __BELLBOUND_DEBUG_PLACE_TIERED__?: (cx: number, cz: number, kind: 'staircase' | 'incline') => string | null;
+    /**
+     * Dev-only hook: dig a FRESHWATER cell at (cx, cz) at its current tier,
+     * bypassing canApply / structure gating. Lets manual tests verify the
+     * waterfall mesh + dedicated waterfall material light up when an upper
+     * tier FRESHWATER cell sits next to a lower neighbour.
+     */
+    __BELLBOUND_DEBUG_DIG_WATER__?: (cx: number, cz: number) => string | null;
   }
 }
 
@@ -383,6 +390,14 @@ if (import.meta.env.DEV) {
     rebuildStructureMeshes();
     scheduleDevLocalSave();
     return result.structure.id;
+  };
+  window.__BELLBOUND_DEBUG_DIG_WATER__ = (cx, cz) => {
+    if (!terraformGrid.cellInBounds(cx, cz)) return 'out_of_bounds';
+    const err = terraformGrid.digFreshwater(cx, cz);
+    if (err) return err.reason;
+    rebuildTerrain(island);
+    scheduleDevLocalSave();
+    return null;
   };
 }
 

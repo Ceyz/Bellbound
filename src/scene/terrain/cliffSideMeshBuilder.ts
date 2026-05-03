@@ -61,8 +61,34 @@ vCliffWorldNormal = normalize(mat3(modelMatrix) * objectNormal);
 const CLIFF_FRAGMENT_HEADER = /* glsl */`
 varying vec3 vCliffWorldPos;
 varying vec3 vCliffWorldNormal;
+uniform sampler2D uCliffGrassTex;
+uniform float uCliffGrassTileSize;
+
+float cliffHash(vec2 p) {
+  return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453);
+}
+float cliffNoise(vec2 p) {
+  vec2 i = floor(p);
+  vec2 f = fract(p);
+  vec2 u = f * f * (3.0 - 2.0 * f);
+  float a = cliffHash(i);
+  float b = cliffHash(i + vec2(1.0, 0.0));
+  float c = cliffHash(i + vec2(0.0, 1.0));
+  float d = cliffHash(i + vec2(1.0, 1.0));
+  return mix(mix(a, b, u.x), mix(c, d, u.x), u.y);
+}
 `;
 
+// ACNH-style cliff fragment:
+//   - 3 horizontal strata defined by sine of world-Y so the wall reads as
+//     stacked rock layers, not the previous vertical "wood plank" panels
+//     that came from a sin(floor(along) * ...) modulation
+//   - strong AO foot shadow in the bottom 30% (was 36% then 0..0.34, now
+//     0..0.55 with a deeper darkening so the cliff base reads as planted)
+//   - top crest fades to grass color via cliffGrass texture sample, hiding
+//     the previously-failed overlay-strip lip with an in-shader blend
+//   - lateral grooves kept light and only at cell edges so concave corners
+//     stay readable
 const CLIFF_FRAGMENT_BODY = /* glsl */`
 #ifdef USE_MAP
   {
@@ -70,18 +96,28 @@ const CLIFF_FRAGMENT_BODY = /* glsl */`
     float along = abs(n.x) > abs(n.z) ? vCliffWorldPos.z : vCliffWorldPos.x;
     float local = fract(along);
     float height01 = clamp(vMapUv.y, 0.0, 1.0);
-    float edgeGroove = 1.0 - smoothstep(0.035, 0.120, min(local, 1.0 - local));
-    float centerGroove = 1.0 - smoothstep(0.015, 0.085, abs(local - 0.50));
-    float fineGroove = pow(max(0.0, cos((along * 8.0 + sin(vCliffWorldPos.y * 5.0) * 0.055) * 6.2831853)), 18.0);
-    float panel = sin((floor(along) * 0.37 + local * 2.0 + sin(vCliffWorldPos.y * 1.4) * 0.08) * 6.2831853) * 0.5 + 0.5;
-    float bottomShadow = 1.0 - smoothstep(0.05, 0.34, height01);
-    float topLight = smoothstep(0.68, 1.0, height01);
 
-    vec3 darkEarth = vec3(0.40, 0.22, 0.14);
-    vec3 warmEarth = vec3(0.72, 0.43, 0.27);
-    vec3 cliffColor = mix(darkEarth, warmEarth, 0.58 + panel * 0.24);
-    cliffColor *= max(0.0, 1.0 - bottomShadow * 0.36 - edgeGroove * 0.28 - centerGroove * 0.16 - fineGroove * 0.10);
-    cliffColor += vec3(0.055, 0.036, 0.020) * topLight;
+    float strata = sin(vCliffWorldPos.y * 4.4 + cliffNoise(vec2(along * 0.7, vCliffWorldPos.y * 0.4)) * 1.3) * 0.5 + 0.5;
+    float strataBands = smoothstep(0.40, 0.72, strata);
+    float edgeGroove = 1.0 - smoothstep(0.04, 0.13, min(local, 1.0 - local));
+    float bottomShadow = 1.0 - smoothstep(0.08, 0.55, height01);
+    float topLight = smoothstep(0.62, 1.0, height01);
+
+    vec3 darkEarth = vec3(0.34, 0.19, 0.11);
+    vec3 warmEarth = vec3(0.74, 0.46, 0.30);
+    vec3 cliffColor = mix(darkEarth, warmEarth, 0.55 + strataBands * 0.30);
+    cliffColor *= max(0.0, 1.0 - bottomShadow * 0.42 - edgeGroove * 0.18);
+    cliffColor += vec3(0.060, 0.040, 0.022) * topLight;
+
+    // Top crest blend: a thin grass lip at the very top of the wall,
+    // ~7% of the cliff height — on a 1.4m tier that lands at ~10 cm,
+    // matching the "just barely overflows" silhouette ACNH cliffs have.
+    // A wider blend (we tried 14%) reads as the upper THIRD of the cliff
+    // being green, which is wrong — the lip should be a band, not a stain.
+    vec2 grassUv = vCliffWorldPos.xz / uCliffGrassTileSize;
+    vec3 grassColor = texture2D(uCliffGrassTex, grassUv).rgb;
+    float crest = smoothstep(0.93, 1.0, height01);
+    cliffColor = mix(cliffColor, grassColor * 0.88, crest);
 
     diffuseColor.rgb *= cliffColor;
   }
@@ -127,6 +163,15 @@ export function buildCliffSideMesh(
     // plane at its boundary; an extra wall would either dip below water or
     // poke through the ocean foam ribbon.
     if (upperCell.surface === Surface.OCEAN) return;
+
+    // Skip raised-FRESHWATER edges: this is a cascade. waterfallMeshBuilder
+    // emits a vertical sheet for the same edge with the dedicated waterfall
+    // shader (white streaks + crest foam + pool mist). Adding a cliff wall
+    // here as well drops a brown stone band in front of the cascade — the
+    // wall's negative polygonOffset wins the depth test and masks the
+    // waterfall entirely, which read as "I dug water on top of a cliff and
+    // there is no cascade".
+    if (upperCell.surface === Surface.FRESHWATER) return;
 
     const isBeachToGrassRamp =
       grid.isBeachCell(lowerCx, lowerCz)
@@ -299,9 +344,16 @@ function createCliffWallMaterial(textures: SurfaceTextureSet): THREE.MeshStandar
   });
   material.name = 'cliff-wall-material';
 
+  const cliffUniforms: Record<string, THREE.IUniform> = {
+    uCliffGrassTex: { value: textures.grass },
+    uCliffGrassTileSize: { value: TILE_SIZE_METERS },
+  };
+  material.userData.cliffUniforms = cliffUniforms;
+
   const previous = material.onBeforeCompile.bind(material);
   material.onBeforeCompile = (shader, renderer) => {
     previous(shader, renderer);
+    Object.assign(shader.uniforms, cliffUniforms);
     shader.vertexShader = shader.vertexShader
       .replace(
         '#include <common>',
@@ -319,7 +371,7 @@ function createCliffWallMaterial(textures: SurfaceTextureSet): THREE.MeshStandar
       .replace('#include <map_fragment>', CLIFF_FRAGMENT_BODY);
   };
 
-  material.customProgramCacheKey = () => 'cliff-wall:v2';
+  material.customProgramCacheKey = () => 'cliff-wall:v3-strata-grass-crest';
   material.needsUpdate = true;
   return material;
 }
@@ -584,10 +636,19 @@ function buildSlopedWallGeometry(
     nx, ny, nz,
   ]);
 
-  // UVs: u along the edge (1m of cell width → cell/HORIZONTAL_TILE), v along
-  // the slope length (in tile units).
+  // UVs: u along the edge (1m of cell width → cell/HORIZONTAL_TILE), v
+  // ALWAYS 0..1 along the slope so the cliff fragment shader's `height01`
+  // is correctly normalized regardless of drop height. A previous version
+  // scaled v by `slopeLen / VERTICAL_TILE_METERS`, which made multi-tier
+  // cliffs (drop > 1.4m) read as v > 1 across the upper half — the shader's
+  // `clamp(vMapUv.y, 0, 1)` then locked the entire upper half to the
+  // "top crest" branch and tinted it grass-green. The cliff fragment shader
+  // is fully procedural (no actual `map` texel sample), so v-tiling is not
+  // needed for texture quality.
   const uMax = grid.cellSize / HORIZONTAL_TILE_METERS;
-  const vMax = (slopeLen / VERTICAL_TILE_METERS) * VERTICAL_TILES;
+  void VERTICAL_TILE_METERS;
+  void VERTICAL_TILES;
+  const vMax = 1.0;
   const uvs = new Float32Array([
     0, 0,
     uMax, 0,

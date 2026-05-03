@@ -20,6 +20,10 @@ import {
   updateFreshwaterStylizedMaterial,
 } from './terrain/freshwaterStylizedMaterial';
 import { buildWaterfallMesh } from './terrain/waterfallMeshBuilder';
+import {
+  createWaterfallStylizedMaterial,
+  updateWaterfallStylizedMaterial,
+} from './terrain/waterfallStylizedMaterial';
 import type { SurfaceTextureSet } from './proceduralTextures';
 import { loadSurfaceTextures } from './surfaceTextureLoader';
 import { createTerrainSplatMaterial, updateTerrainSplatMaterial } from './terrainSplatMaterial';
@@ -137,8 +141,12 @@ export function createIslandScene(): IslandScene {
   scene.add(freshwater);
 
   // Waterfalls — auto-generated vertical sheets at every grid edge where a
-  // FRESHWATER cell drops to a lower neighbor. Reuses the freshwater material.
-  const waterfalls = buildWaterfallMesh(getTerrainGrid(), freshwaterMaterial);
+  // FRESHWATER cell drops to a lower neighbor. Dedicated shader: vertical
+  // white streaks animated downward, crest foam at the top, pool mist at the
+  // bottom. Reusing the calm freshwater material here read as a flat blue
+  // curtain since calm water has none of those.
+  const waterfallMaterial = createWaterfallStylizedMaterial();
+  const waterfalls = buildWaterfallMesh(getTerrainGrid(), waterfallMaterial);
   waterfalls.receiveShadow = false;
   scene.add(waterfalls);
 
@@ -167,11 +175,10 @@ export function createIslandScene(): IslandScene {
   applyRollingShaderTo(ground.material);
   applyRollingShaderTo(water.material);
   applyRollingShaderTo(freshwater.material);
+  applyRollingShaderTo(waterfalls.material);
   disableFrustumCullingForRolling(ground);
   disableFrustumCullingForRolling(water);
   disableFrustumCullingForRolling(freshwater);
-  // waterfalls share freshwater.material so the rolling patch is already on,
-  // just disable culling so the warp doesn't push them off-frame.
   disableFrustumCullingForRolling(waterfalls);
 
   const cliffMaterials = new Set<THREE.Material>();
@@ -409,6 +416,7 @@ export function tickIslandScene(
   island.water.position.y = -0.40 + Math.sin(elapsed * 1.8) * params.waveHeight * 0.08;
   updateWaterStylizedMaterial(island.water.material, elapsed, params.waveHeight);
   updateFreshwaterStylizedMaterial(island.freshwater.material, elapsed);
+  updateWaterfallStylizedMaterial(island.waterfalls.material, elapsed);
   updateTerrainSplatMaterial(island.ground.material, elapsed);
 
   const lighting = computeTimeOfDay(params.timeOfDay);

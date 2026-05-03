@@ -119,16 +119,28 @@ float fwNoise(vec2 p) {
 }
 `;
 
-// Composition: flat 2-stop palette, no flow streaks. The previous ship had
-// scrolling streaks scaled to read as "current" on a flowing river; on the
-// 1m grid those scaled into chunky swirls and beige-ish brighter bands that
-// the user read as glitchy waves on the surface. v1 ships flat; reintroduce
-// flow when we have real-world camera distance to read the streaks as
-// subtle current.
+// Composition: 2-stop palette + 2 noise scales for ACNH-painted variation
+// + very subtle directional streaks. The 2026-04-29 ship was flat because
+// previous streaks at high freq read as glitchy beige bands; this version
+// drops the streak frequency to ~0.7/m and intensity to 6%, which reads as
+// soft current rather than bright stripes. Edge darkening near banks is
+// deferred — requires the riverMask uniform which the freshwater material
+// doesn't yet receive (that lives on the splat material).
 const FRAGMENT_BODY = `
 vec2 wxz = vFreshwaterWorldXZ;
 float broadWave = fwNoise(wxz * 0.13 + vec2(0.055, -0.025) * uTime);
+float fineWave  = fwNoise(wxz * 0.55 + vec2(-0.018, 0.030) * uTime);
+
 vec3 riverGreen = vec3(0.16, 0.66, 0.82);
 vec3 riverLight = vec3(0.42, 0.90, 0.95);
-vec3 freshwaterColor = mix(riverGreen, riverLight, broadWave * 0.4);
+vec3 freshwaterColor = mix(riverGreen, riverLight, broadWave * 0.45 + fineWave * 0.15);
+
+// Soft directional streaks — the streak field rolls slowly along +X over
+// time. Mix in a tiny brightening (6% max) so the surface has movement
+// without the previously-glitchy beige bands. Streaks scale at 0.7/m so on
+// a 1m cell a player sees less than one streak; that prevents the chunky
+// swirl read.
+float streak = sin((wxz.x + wxz.y * 0.4) * 0.7 + uTime * 0.6);
+streak = streak * 0.5 + 0.5;
+freshwaterColor += vec3(0.04, 0.06, 0.06) * smoothstep(0.65, 1.0, streak);
 `;

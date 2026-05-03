@@ -29,6 +29,7 @@ export function buildWaterfallMesh(
   const positions: number[] = [];
   const normals: number[] = [];
   const uvs: number[] = [];
+  const drops: number[] = [];
   const indices: number[] = [];
   let vertexCount = 0;
 
@@ -36,7 +37,15 @@ export function buildWaterfallMesh(
     const upperCell = grid.getCell(upperCx, upperCz);
     if (upperCell.surface !== Surface.FRESHWATER) return;
 
-    const topY = tierHeight(upperCell.tier) - FRESHWATER_SURFACE_OFFSET_METERS;
+    // Top of the cascade sits at the SURROUNDING grass level (cell tier top),
+    // not at the recessed water surface (which is FRESHWATER_SURFACE_OFFSET
+    // below). ACNH cascades visually start right at the grass edge — a
+    // ~30cm sliver of brown river-bank otherwise pokes above the falling
+    // water from a south-facing angle (the bank between the pond and the
+    // surrounding land at upper tier). Hiding that sliver behind the
+    // cascade makes the falling water read as continuous from the grass.
+    const topY = tierHeight(upperCell.tier);
+    void FRESHWATER_SURFACE_OFFSET_METERS;
 
     const lowerCell = grid.getCell(lowerCx, lowerCz);
     let bottomY: number;
@@ -83,7 +92,24 @@ export function buildWaterfallMesh(
       p0x, topY, p0z,
     );
     for (let i = 0; i < 4; i += 1) normals.push(...normal);
-    uvs.push(0, 0, 1, 0, 1, 1, 0, 1);
+    // UVs in METERS so the waterfall shader gets stable world-space scale
+    // for streaks (≈ 8/m) and crest/pool bands (top 12 cm, bottom 10 cm) no
+    // matter how tall or wide the drop is. u = along the edge (0..edgeLen),
+    // v = up the drop (0 at pool, drop_meters at crest).
+    //
+    // `aDropMeters` is a per-vertex constant equal to the cascade's full
+    // drop height — needed so the shader can place crest foam at the top
+    // (drop - 0.12 .. drop) and pool mist at the bottom (0 .. 0.10) when
+    // multiple cascades of different heights coexist in one merged mesh.
+    const edgeLen = grid.cellSize;
+    const drop = topY - bottomY;
+    uvs.push(
+      0, 0,
+      edgeLen, 0,
+      edgeLen, drop,
+      0, drop,
+    );
+    drops.push(drop, drop, drop, drop);
 
     const v = vertexCount;
     indices.push(v, v + 1, v + 2);
@@ -95,6 +121,7 @@ export function buildWaterfallMesh(
   geometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
   geometry.setAttribute('normal', new THREE.Float32BufferAttribute(normals, 3));
   geometry.setAttribute('uv', new THREE.Float32BufferAttribute(uvs, 2));
+  geometry.setAttribute('aDropMeters', new THREE.Float32BufferAttribute(drops, 1));
   geometry.setIndex(indices);
   geometry.computeBoundingSphere();
   geometry.computeBoundingBox();
