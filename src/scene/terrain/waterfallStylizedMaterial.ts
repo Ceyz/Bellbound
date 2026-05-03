@@ -33,7 +33,11 @@ export function createWaterfallStylizedMaterial(): THREE.MeshStandardMaterial {
     metalness: 0,
     opacity: 1.0,
     roughness: 1.0,
-    side: THREE.DoubleSide,
+    // FrontSide so the cascade only renders on its outward-facing face.
+    // DoubleSide made the back of the cascade quad visible from inside
+    // the pond looking out, which read as the cascade rendering on all
+    // 4 walls of the pond instead of just the drop side.
+    side: THREE.FrontSide,
     transparent: false,
   });
   material.name = 'waterfall-stylized';

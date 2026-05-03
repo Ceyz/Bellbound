@@ -46,7 +46,12 @@ const FRINGE_SEGMENTS_PER_EDGE = 6;
  * concave corner do not overlap past the cell center.
  */
 const SLOPE_OFFSET_CLIFF = 0;
-const SLOPE_OFFSET_RIVER_BANK = 0.45;
+// River banks vertical too: a non-zero offset pushes the bottom edge INTO
+// the FW cell, which raises the visible cascade-pool meeting point and
+// reads as a triangular "hole" at the base of the cascade ("l'arrête est
+// levée comme pour faire une pente"). With offset=0 the bank is a clean
+// vertical wall and the cascade meets the lower water plane edge-to-edge.
+const SLOPE_OFFSET_RIVER_BANK = 0;
 
 const CLIFF_VERTEX_VARYINGS = /* glsl */`
 varying vec3 vCliffWorldPos;
@@ -101,15 +106,24 @@ const CLIFF_FRAGMENT_BODY = /* glsl */`
     float worldY = vCliffWorldPos.y;
     float height01 = clamp(vMapUv.y, 0.0, 1.0);
 
-    // 3-octave FBM color variation. X and Y frequencies are matched
-    // (1.1, 2.4, 4.5) instead of the previous Y-biased pair (0.85, 1.40,
-    // 2.60) — tall narrow walls were stretching the noise vertically and
-    // the result read as wood planks. Matched frequencies = isotropic
-    // blobs that look like rough rock.
-    float n1 = cliffNoise(vec2(along * 1.1, worldY * 1.1));
-    float n2 = cliffNoise(vec2(along * 2.4 + 17.3, worldY * 2.4 - 4.2));
-    float n3 = cliffNoise(vec2(along * 4.5 - 9.1, worldY * 4.5 + 2.8));
+    // 3-octave FBM color variation, X-biased so the noise reads as
+    // HORIZONTAL stratification rather than vertical streaks. X freqs are
+    // 3-5x the Y freqs, which on a 1 m × 1.4 m+ cliff produces wider
+    // horizontal blobs and short vertical extents — opposite of the
+    // wood-plank look the user reported. A matched X/Y pair (1.1, 1.1)
+    // still read as wood because tall walls have a larger Y range than
+    // the 1 m cell width and the noise stretched that way.
+    float n1 = cliffNoise(vec2(along * 3.5, worldY * 0.9));
+    float n2 = cliffNoise(vec2(along * 6.5 + 17.3, worldY * 1.7 - 4.2));
+    float n3 = cliffNoise(vec2(along * 11.0 - 9.1, worldY * 3.0 + 2.8));
     float colorVar = clamp(n1 * 0.55 + n2 * 0.30 + n3 * 0.15, 0.0, 1.0);
+
+    // Subtle horizontal stratum lines: thin darker bands every ~30 cm
+    // vertically with noise-jittered Y position. Reads as sedimentary
+    // rock layers, breaks any residual vertical look.
+    float stratumY = worldY + cliffNoise(vec2(along * 0.7, worldY * 0.3)) * 0.12;
+    float stratum = abs(fract(stratumY * 3.3) - 0.5);
+    float stratumDark = smoothstep(0.45, 0.50, stratum) * 0.18;
 
     // 3 cracks, each living in a random vertical SEGMENT of the wall.
     // For each crack k:
@@ -150,7 +164,7 @@ const CLIFF_FRAGMENT_BODY = /* glsl */`
     vec3 darkEarth = vec3(0.34, 0.19, 0.11);
     vec3 warmEarth = vec3(0.74, 0.46, 0.30);
     vec3 cliffColor = mix(darkEarth, warmEarth, 0.42 + colorVar * 0.46);
-    cliffColor *= max(0.0, 1.0 - bottomShadow * 0.42 - fissure);
+    cliffColor *= max(0.0, 1.0 - bottomShadow * 0.42 - fissure - stratumDark);
     cliffColor += vec3(0.060, 0.040, 0.022) * topLight;
 
     // Grass crest blend with a noisy top boundary so the lip silhouette is
