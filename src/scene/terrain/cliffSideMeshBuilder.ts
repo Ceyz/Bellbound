@@ -125,44 +125,42 @@ const CLIFF_FRAGMENT_BODY = /* glsl */`
     float stratum = abs(fract(stratumY * 3.3) - 0.5);
     float stratumDark = smoothstep(0.45, 0.50, stratum) * 0.18;
 
-    // Horizontal cracks instead of vertical fissures. ACNH cliffs read
-    // as "imperfect cracked lines, not straight, varied thickness" — the
-    // user's reference. For each crack k:
-    //   1. pick a random Y position (a horizontal band lives at this Y),
-    //   2. pick a horizontal X RANGE [xLeft, xRight] where the crack lives
-    //      (varied length 25-90 cm, random per crack),
-    //   3. add a Y-jitter via noise so the crack curves along its length
-    //      instead of running ruler-straight,
-    //   4. give it a varied half-thickness (1-4 cm) that breathes along
-    //      its length, again via noise.
-    // Result: short curved dark slits at varying heights, of varied
-    // length and thickness — looks like sedimentary cracks, not planks.
+    // Vertical cracks (matching ACNH reference) but explicitly IMPERFECT:
+    //   1. each crack picks a random X position deterministic per cell-X,
+    //   2. picks a vertical EXTENT [yLow, yHigh] of varied length (25-90 cm)
+    //      so the crack does not run from cliff foot to crest,
+    //   3. wobbles its X position by noise of worldY (~6 cm peak) so the
+    //      crack curves along its length instead of running ruler-straight,
+    //   4. carries a per-fragment thickness that breathes (1-4 cm) along Y.
+    // Result: short curved dark slits at varying X positions, of varied
+    // length and thickness — "des traits imparfaits qui font pas toute la
+    // ligne, plus ou moins gros, pas droits", per the user's spec.
     float fissure = 0.0;
     for (int k = 0; k < 4; k++) {
       float fk = float(k);
-      float seedY = cliffNoise(vec2(fk * 13.7, fk * 21.3));
-      float fy    = floor(worldY * 0.85 + seedY * 7.0) / 0.85;
-      float yOff  = (cliffNoise(vec2(floor(worldY * 0.85 + seedY * 7.0), fk * 5.3)) - 0.5) * 0.45;
-      float yCenter = fy + yOff;
+      float seedX = cliffNoise(vec2(fk * 13.7, fk * 21.3));
+      float fx    = floor(along * 0.85 + seedX * 7.0) / 0.85;
+      float xOff  = (cliffNoise(vec2(floor(along * 0.85 + seedX * 7.0), fk * 5.3)) - 0.5) * 0.45;
+      float xCenter = fx + xOff;
 
-      // Curve the crack: yCenter wobbles by noise of along, ~6 cm peak.
-      float crackJitter = (cliffNoise(vec2(along * 0.9 + fk * 11.0, fy * 0.4)) - 0.5) * 0.06;
-      float yEffective = yCenter + crackJitter;
+      // Curve the crack: xCenter wobbles by noise of worldY, ~6 cm peak.
+      float crackJitter = (cliffNoise(vec2(worldY * 0.9 + fk * 11.0, fx * 0.4)) - 0.5) * 0.06;
+      float xEffective = xCenter + crackJitter;
 
-      // Random horizontal extent.
-      float xSeed = cliffNoise(vec2(floor(worldY * 0.85 + seedY * 7.0) + 7.0, fk * 9.1));
-      float xCenter = xSeed * 6.0 - 3.0 + along - mod(along, 1.0);
-      float xHalf   = 0.13 + xSeed * 0.32;
+      // Random vertical extent for this crack.
+      float ySeed   = cliffNoise(vec2(floor(along * 0.85 + seedX * 7.0) + 7.0, fk * 9.1));
+      float yCenter = ySeed * 4.0 - 1.5 + worldY - mod(worldY, 1.4);
+      float yHalf   = 0.13 + ySeed * 0.32;
 
       // Thickness varies along the length.
-      float thickSeed = cliffNoise(vec2(along * 1.3 + fk * 4.0, yCenter * 0.6));
+      float thickSeed = cliffNoise(vec2(worldY * 1.3 + fk * 4.0, xCenter * 0.6));
       float halfThickness = 0.010 + thickSeed * 0.030;
 
-      float dY = abs(worldY - yEffective);
-      float dX = abs(along - xCenter);
-      float coreY = smoothstep(halfThickness, halfThickness * 0.4, dY);
-      float coreX = smoothstep(xHalf, xHalf * 0.6, dX);
-      float core  = coreY * coreX;
+      float dX = abs(along - xEffective);
+      float dY = abs(worldY - yCenter);
+      float coreX = smoothstep(halfThickness, halfThickness * 0.4, dX);
+      float coreY = smoothstep(yHalf, yHalf * 0.6, dY);
+      float core  = coreX * coreY;
       float topFade = 1.0 - smoothstep(0.86, 1.0, height01);
       fissure = max(fissure, core * topFade * (0.30 + thickSeed * 0.30));
     }
