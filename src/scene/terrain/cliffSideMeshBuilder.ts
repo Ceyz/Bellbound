@@ -80,14 +80,14 @@ float cliffNoise(vec2 p) {
 `;
 
 // ACNH-style cliff fragment, randomised:
-//   - color varies via 3 octaves of FBM noise (replaces the previous sin
-//     strata band that read as a single hard horizontal line in the middle
-//     of every cliff face — the user's "trait au milieu" complaint)
-//   - 3 vertical fissures at deterministic-but-random world-X positions,
-//     each with its own width and depth — gives the wall organic cracks
-//     instead of a uniform painted block
-//   - grass crest top edge jittered by noise so the lip silhouette is wavy,
-//     not a perfectly horizontal line
+//   - color varies via 3 octaves of FBM noise with isotropic (square)
+//     X/Y frequencies so tall narrow walls do not stretch the noise into
+//     wood-grain stripes (the user's "ça devient du bois" complaint when
+//     a deep pit exposes a tall cliff face)
+//   - cracks are SEGMENTS, not full-height streaks: each crack picks a
+//     vertical band of the wall and only darkens within it, then fades
+//     out — no single crack reaches from grass top to cliff foot
+//   - grass crest top edge jittered by noise so the lip silhouette is wavy
 //   - strong AO foot shadow in the bottom 55% kept for grounding
 //
 // Everything keys off `along` (world-X or world-Z depending on wall normal)
@@ -98,36 +98,50 @@ const CLIFF_FRAGMENT_BODY = /* glsl */`
   {
     vec3 n = normalize(vCliffWorldNormal);
     float along = abs(n.x) > abs(n.z) ? vCliffWorldPos.z : vCliffWorldPos.x;
+    float worldY = vCliffWorldPos.y;
     float height01 = clamp(vMapUv.y, 0.0, 1.0);
 
-    // 3-octave FBM color variation: low-frequency blobs (n1) carry the
-    // overall warm/dark balance, mid (n2) breaks them up into chunks, high
-    // (n3) adds grain. No sin, no strata bands.
-    float n1 = cliffNoise(vec2(along * 0.45, vCliffWorldPos.y * 0.85));
-    float n2 = cliffNoise(vec2(along * 1.30 + 17.3, vCliffWorldPos.y * 1.40 - 4.2));
-    float n3 = cliffNoise(vec2(along * 3.90 - 9.1, vCliffWorldPos.y * 2.60 + 2.8));
+    // 3-octave FBM color variation. X and Y frequencies are matched
+    // (1.1, 2.4, 4.5) instead of the previous Y-biased pair (0.85, 1.40,
+    // 2.60) — tall narrow walls were stretching the noise vertically and
+    // the result read as wood planks. Matched frequencies = isotropic
+    // blobs that look like rough rock.
+    float n1 = cliffNoise(vec2(along * 1.1, worldY * 1.1));
+    float n2 = cliffNoise(vec2(along * 2.4 + 17.3, worldY * 2.4 - 4.2));
+    float n3 = cliffNoise(vec2(along * 4.5 - 9.1, worldY * 4.5 + 2.8));
     float colorVar = clamp(n1 * 0.55 + n2 * 0.30 + n3 * 0.15, 0.0, 1.0);
 
-    // 3 vertical fissures. Each fissure k picks a random X-offset and width
-    // from a noise-derived seed so the same wall always has the same cracks.
-    // The fissure darkens cliffColor in a smooth band so the edges look
-    // worn, not painted-on.
+    // 3 cracks, each living in a random vertical SEGMENT of the wall.
+    // For each crack k:
+    //   1. pick a random X position around the cell-aligned grid step,
+    //   2. pick a vertical band [yLow, yHigh] in world-Y where the crack
+    //      lives (random center, random length 0.30..0.80 m),
+    //   3. apply a 1D smoothstep falloff in Y so the crack fades in and
+    //      out instead of running from cliff top to foot.
+    // Result: short, irregular dark slits that read as erosion, not the
+    // full-height bands that previously read as planks.
     float fissure = 0.0;
     for (int k = 0; k < 3; k++) {
       float fk = float(k);
       float seedX  = cliffNoise(vec2(fk * 7.31, fk * 11.7)) * 9.0;
-      float fx     = floor(along * 0.45 + seedX) / 0.45;
-      float offset = (cliffNoise(vec2(floor(along * 0.45 + seedX), fk * 3.7)) - 0.5) * 1.6;
-      float center = fx + offset;
-      float widthSeed = cliffNoise(vec2(floor(along * 0.45 + seedX) + 13.0, fk * 5.1));
-      float halfWidth = 0.025 + widthSeed * 0.060;
-      float dist = abs(along - center);
-      float core = smoothstep(halfWidth, 0.0, dist);
-      // Fade the fissure toward the very top so it doesn't crash through
-      // the grass crest (a vertical crack reaching into the grass band
-      // looks like a tear, not erosion).
-      float topFade = 1.0 - smoothstep(0.86, 1.0, height01);
-      fissure = max(fissure, core * topFade * (0.35 + widthSeed * 0.25));
+      float fx     = floor(along * 0.55 + seedX) / 0.55;
+      float xOff   = (cliffNoise(vec2(floor(along * 0.55 + seedX), fk * 3.7)) - 0.5) * 1.4;
+      float center = fx + xOff;
+      float widthSeed = cliffNoise(vec2(floor(along * 0.55 + seedX) + 13.0, fk * 5.1));
+      float halfWidth = 0.020 + widthSeed * 0.050;
+
+      // Vertical segment for THIS crack on THIS wall column.
+      float ySeed   = cliffNoise(vec2(floor(along * 0.55 + seedX) + 41.0, fk * 9.3));
+      float yCenter = ySeed * 4.0 - 0.4 + worldY - mod(worldY, 1.4);
+      float yHalf   = 0.18 + ySeed * 0.22;
+
+      float dx       = abs(along - center);
+      float dy       = abs(worldY - yCenter);
+      float coreX    = smoothstep(halfWidth, 0.0, dx);
+      float coreY    = smoothstep(yHalf, yHalf * 0.5, dy);
+      float core     = coreX * coreY;
+      float topFade  = 1.0 - smoothstep(0.86, 1.0, height01);
+      fissure = max(fissure, core * topFade * (0.22 + widthSeed * 0.18));
     }
 
     float bottomShadow = 1.0 - smoothstep(0.08, 0.55, height01);
@@ -140,9 +154,7 @@ const CLIFF_FRAGMENT_BODY = /* glsl */`
     cliffColor += vec3(0.060, 0.040, 0.022) * topLight;
 
     // Grass crest blend with a noisy top boundary so the lip silhouette is
-    // not a perfectly straight line. We jitter the crest threshold per
-    // world-X by ±3 cm equivalent, so adjacent wall fragments transition
-    // to grass at slightly different heights — reads as natural overhang.
+    // not a perfectly straight line.
     vec2 grassUv    = vCliffWorldPos.xz / uCliffGrassTileSize;
     vec3 grassColor = texture2D(uCliffGrassTex, grassUv).rgb;
     float crestJitter = (cliffNoise(vec2(along * 1.7, 0.0)) - 0.5) * 0.04;

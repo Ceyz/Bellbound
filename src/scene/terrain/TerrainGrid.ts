@@ -39,7 +39,7 @@ export const FRESHWATER_BED_OFFSET_METERS = 0.5;
  * surface mesh builder (Step 6); not used by the grid's `cellHeight()` which
  * reports the bed for player physics.
  */
-export const FRESHWATER_SURFACE_OFFSET_METERS = 0.30;
+export const FRESHWATER_SURFACE_OFFSET_METERS = 0.05;
 
 /**
  * How far a "beach cell" (LAND-T0 within `BEACH_RADIUS_CELLS` of an OCEAN cell)
