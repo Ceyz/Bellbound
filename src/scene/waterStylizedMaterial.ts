@@ -41,6 +41,7 @@ export function createWaterStylizedMaterial(options: WaterStylizedOptions): THRE
     color: 0x000000,
     depthWrite: false,
     emissive: 0xffffff,
+    fog: false,
     metalness: 0,
     opacity: 0.92,
     roughness: 1.0,
@@ -83,7 +84,7 @@ export function createWaterStylizedMaterial(options: WaterStylizedOptions): THRE
       );
   };
 
-  material.customProgramCacheKey = () => 'water-stylized:v65';
+  material.customProgramCacheKey = () => 'water-stylized:v77';
   material.needsUpdate = true;
 
   return material;
@@ -218,23 +219,23 @@ vec2 inward = length(wxz) > 0.01 ? -normalize(wxz) : vec2(0.0, -1.0);
 vec2 inwardRot1 = vec2(0.866 * inward.x - 0.5 * inward.y,
                         0.5   * inward.x + 0.866 * inward.y);
 
-// Two Gerstner waves with PER-POSITION phase noise. Cozy ACNH-style:
-// amplitudes kept tiny so the water reads as nearly flat — heavy Y bumps
-// at the cozy camera angle look like rolling hills, not water. The visible
-// motion comes from the foam and the dynamic shore boundary, not from
-// vertex displacement.
+// Two Gerstner waves with PER-POSITION phase noise. Amplitudes bumped from
+// 4cm/3cm → 10cm/7cm so the wave shape reads as visible 3D motion at the
+// cozy camera angle (4cm was sub-degree on screen, invisible). With the
+// crestLift contrast trimmed to 4 % (above), the higher amplitudes don't
+// blow out to white at the wave peaks.
 //
 // Per-wave Q = 0.40 (sum 0.80, ≤1 for stability).
-//   Wave 1: long dominant swell, period ~5 s, A=4cm.
-//   Wave 2: medium swell rotated +30°, period ~4 s, A=3cm.
+//   Wave 1: long dominant swell, period ~5 s, A=10cm.
+//   Wave 2: medium swell rotated +30°, period ~4 s, A=7cm.
 //
 // Wave 1 uses swashNoise (NOT wvNoise) for its phase noise so it matches
 // what swashSignal() computes — the LAND/OCEAN boundary moves WITH this
 // wave's crest instead of on an independent timer.
 float pn1 = swashNoise(wxz * 0.07) * 6.28318;
 float pn2 = wvNoise(wxz * 0.09 + vec2(3.7, 5.1)) * 6.28318;
-vec3 g1 = gerstnerWave(wxz, inward,     12.0, 0.04, 2.4,  0.40, uTime, pn1);
-vec3 g2 = gerstnerWave(wxz, inwardRot1,  8.5, 0.03, 2.13, 0.40, uTime, pn2);
+vec3 g1 = gerstnerWave(wxz, inward,     12.0, 0.10, 2.4,  0.40, uTime, pn1);
+vec3 g2 = gerstnerWave(wxz, inwardRot1,  8.5, 0.07, 2.13, 0.40, uTime, pn2);
 vec3 gerstnerDisp = (g1 + g2) * waveScale;
 transformed.x += gerstnerDisp.x;
 transformed.y += gerstnerDisp.y;
@@ -259,8 +260,8 @@ float foamVisibility = smoothstep(0.55, 0.95, swashHeight);
 
 vWaterWorldXZ = wxz;
 // Normalize Gerstner Y sum to roughly [-1, +1] for the fragment crest tint.
-// Total max amplitude = 0.04 + 0.03 = 0.07.
-vWaveCrest = (g1.y + g2.y) / 0.07;
+// Total max amplitude = 0.10 + 0.07 = 0.17.
+vWaveCrest = (g1.y + g2.y) / 0.17;
 vWashAmp = foamVisibility;  // repurposed: foam intensity for fragment shader
 vRunupPhase = swashCycle;
 vFrontSDF = swashThreshold;
@@ -413,9 +414,13 @@ vec3 sandyShallow = sandFloor;
 // shallow stop was missing in the previous palette — without it the water went
 // from saturated cyan straight to sandy-tan, skipping the bright "clear water
 // over very shallow bottom" zone that gives tropical beaches their luminous read.
+// ACNH-style tropical-paradise palette: deep saturated blue far offshore,
+// bright tropical cyan mid, AQUA pale shallow. Trimmed back from saturated
+// near-white because at full crestLift the previous palette pushed past 1.0
+// per channel and read as a big white blob on Gerstner wave peaks.
 vec3 midOcean   = vec3(0.22, 0.74, 0.94);
 vec3 deepOcean  = vec3(0.04, 0.40, 0.78);
-vec3 paleShallow = vec3(0.32, 0.78, 0.84);  // clear cyan, not a white shoreline stripe
+vec3 paleShallow = vec3(0.42, 0.82, 0.92);  // tropical aqua, leaves headroom for crestLift
 
 // Bring the deep saturated blue closer to shore (was 14 m → now 8 m to reach
 // full deep). At the ACNH camera angle, 14 m is essentially off-frame, so the
@@ -423,14 +428,16 @@ vec3 paleShallow = vec3(0.32, 0.78, 0.84);  // clear cyan, not a white shoreline
 // depth read. New ramp: mid (1.5 m) → deep saturation by 8 m offshore.
 float toMid = smoothstep(8.0, 1.5, distFromShoreM);
 vec3 oceanColor = mix(deepOcean, midOcean, toMid);
-// Pale clear band: brightens water from 4 m offshore inward, dominant by ~1 m.
-float toPale = smoothstep(4.0, 0.8, distFromShoreM);
-oceanColor = mix(oceanColor, paleShallow, toPale * 0.32);
-// Sand floor texture only shows in the last 1 m, blended with the pale layer
-// (not replacing it) so the eye still reads clear water, just with a hint of
-// the sandy bottom variegation underneath.
-float toShallow = smoothstep(1.4, 0.0, distFromShoreM);
-oceanColor = mix(oceanColor, sandyShallow, toShallow * 0.72);
+// SHORE TINT EXPERIMENT 2026-05-03: paleShallow + sandyShallow blends
+// disabled to remove the visible "gray band" between the grid LAND silhouette
+// and the analytical SDF shore. Without these, the water stays uniformly
+// mid/deep ocean color all the way to the LAND mesh, eliminating the
+// stair-step mismatch the user noticed. Re-enable by restoring the toPale +
+// toShallow mixes if we want shallow-water variation back later.
+// float toPale = smoothstep(4.0, 0.8, distFromShoreM);
+// oceanColor = mix(oceanColor, paleShallow, toPale * 0.45);
+// float toShallow = smoothstep(1.4, 0.0, distFromShoreM);
+// oceanColor = mix(oceanColor, sandyShallow, toShallow * 0.72);
 oceanColor *= mix(0.96, 1.04, broadWave);
 
 // River: 2-stop greenish palette + a directional flow effect (scrolling streaks
@@ -450,17 +457,15 @@ riverColor = mix(riverColor, riverColor * 0.86, riverStreak2 * 0.30);
 
 vec3 baseColor = mix(oceanColor, riverColor, riverWater);
 
-// --- Caustics: dappled sun pattern, restricted to the shallow band only.
-// Reduced 2026-05-02: previous full-strength caustics + drifting streaks
-// combined into "cloud reflection" patches across the open ocean. Now the
-// caustics fade out completely past 4m offshore (was 8m) so they only show
-// in the wet-sand band right at the shore, where they look like sun caustics
-// through clear water rather than scattered haze offshore.
+// --- Caustics: subtle cyan-aqua highlights in the shallow band ------------------
+// Tinted toward G+B only (NOT R) so they read as cyan-aqua sparkles instead
+// of "white blobs all over the water". Intensity dialed back: caustics are a
+// background texture for the shallow band, not the dominant feature.
 float caustic = waterCaustic(vWaterWorldXZ, uTime);
-float causticDepthFade = mix(1.0, 0.0, smoothstep(0.5, 4.0, distFromShoreM));
-float causticShoreFade = smoothstep(0.45, 1.35, distFromShoreM);
-baseColor += vec3(0.18, 0.22, 0.22) * caustic * causticDepthFade
-  * causticShoreFade * (0.60 + 0.40 * uWaveStrength);
+float causticDepthFade = mix(1.0, 0.0, smoothstep(0.5, 6.0, distFromShoreM));
+float causticShoreFade = smoothstep(0.40, 1.30, distFromShoreM);
+baseColor += vec3(0.08, 0.20, 0.24) * caustic * causticDepthFade
+  * causticShoreFade * (0.65 + 0.35 * uWaveStrength);
 
 // Drifting light streaks removed 2026-05-02 — they read as cloud reflections
 // drifting across the open ocean.
@@ -474,8 +479,14 @@ baseColor += vec3(0.14, 0.18, 0.18) * shimmer * 0.42;
 // Crest highlight: ridges of the displaced surface read brighter, troughs
 // darker. Re-widened (was 0.94/1.08 ±7%, now 0.88/1.18 ±15%) so the wave shape
 // reads as actual relief rather than a flat plane with subtle shading.
+// Crest lift reduced from 0.88-1.18 (15% range) to 0.96-1.04 (4% range).
+// The previous range, multiplied against the bright paleShallow palette,
+// blew the per-channel value past 1.0 on wave peaks and produced large
+// near-white blobs floating across the water (visible from far away as
+// "cloud reflections"). 4% range still gives the wave shape a subtle
+// brightness gradient without saturating.
 float crestLift = clamp(vWaveCrest * 0.5 + 0.5, 0.0, 1.0);
-baseColor = mix(baseColor * 0.88, baseColor * 1.18, crestLift);
+baseColor = mix(baseColor * 0.96, baseColor * 1.04, crestLift);
 
 // (Sky/cloud reflection on wave crests removed — the bright sky-tint highlights
 // on the open ocean read as cloud reflections, but the procedural sky clouds
@@ -488,9 +499,14 @@ baseColor = mix(baseColor * 0.88, baseColor * 1.18, crestLift);
 // flat colored plane that only animates at the shore):
 //
 //  A. SUN GLOW — warm pink-orange tint on wave peaks at grazing view angles.
-//     Loosened threshold (was so narrow it barely showed): pow exponent 2.5→1.4,
-//     crest threshold 0.55→0.30, intensity 0.34→0.55. Now visibly tints the
-//     ocean at distance with the magic-hour warmth.
+//     Re-tightened 2026-05-03: with rolling-world curvature, viewDir.y at the
+//     horizon falls to near 0, so fresnelGraze pegs at ~1.0 along the entire
+//     curved edge of the visible ocean. Combined with the orange tint, that
+//     pushed R+G+B all toward 1.0 and rendered as a giant near-white "cloud"
+//     hugging the horizon curve. Re-tuning back to the original tighter band:
+//       pow exponent 1.4 → 3.0  (only very-grazing angles trigger)
+//       distance band 1.5-8 → 4-7 m  (skips the very-far horizon)
+//       intensity 0.55 → 0.20  (subtle warm hint, not a haze)
 //
 //  B. WAVE FRONTS — long parallel sin stripes drifting across the open ocean.
 //     Without these the deep water reads as one flat color since the vertex
@@ -502,37 +518,42 @@ baseColor = mix(baseColor * 0.88, baseColor * 1.18, crestLift);
 // day/night cycle for proper time-of-day matching.
 vec3 viewDir = normalize(-vViewPosition);
 float fresnelGraze = 1.0 - abs(viewDir.y);
-fresnelGraze = pow(clamp(fresnelGraze, 0.0, 1.0), 1.4);
+fresnelGraze = pow(clamp(fresnelGraze, 0.0, 1.0), 3.0);
 float crestUp = clamp(vWaveCrest * 0.5 + 0.5, 0.0, 1.0);
 float sunGlow = fresnelGraze
   * smoothstep(0.30, 0.85, crestUp)
-  * smoothstep(1.5, 8.0, distFromShoreM);
+  * smoothstep(4.0, 7.0, distFromShoreM)
+  * (1.0 - smoothstep(12.0, 20.0, distFromShoreM));
 vec3 sunTint = vec3(1.00, 0.62, 0.38);
-baseColor += sunTint * sunGlow * 0.55;
+baseColor += sunTint * sunGlow * 0.20;
 
 // Drifting wave fronts: long stripes oriented mostly along world X, slowly
 // scrolling north-east, perturbed by a low-freq noise so the lines bend
 // organically. Visible in the deep band only.
 vec2 frontUv = vWaterWorldXZ * vec2(0.18, 0.36) + vec2(uTime * 0.18, uTime * 0.06);
-float frontWobble = waterNoise(frontUv * 0.45) * 1.6;
+// Wobble dialed 1.6 → 0.6 so the sin() peaks stay as recognizable parallel
+// stripes instead of bending so far that adjacent crests merge into a soft
+// blob — the merged blob read as a "white cloud drifting onto the shore".
+float frontWobble = waterNoise(frontUv * 0.45) * 0.6;
 float frontPattern = sin(frontUv.x * 1.4 + frontWobble) * 0.5 + 0.5;
 float frontMask = smoothstep(0.55, 0.85, frontPattern)
   * smoothstep(3.5, 9.0, distFromShoreM)
   * (1.0 - smoothstep(28.0, 38.0, distFromShoreM))
   * oceanFlag;
-baseColor += vec3(0.10, 0.16, 0.20) * frontMask * 0.42;
+// Tint shifted from cyan-leaning (0.10, 0.16, 0.20) to balanced (0.06, 0.10, 0.10).
+// On the bright paleShallow base, the cyan-leaning add saturated the B channel
+// past 1.0 and rendered as near-white. Balanced tint keeps the wave-front
+// pattern visible but reads as a darker shimmer rather than white foam.
+baseColor += vec3(0.06, 0.10, 0.10) * frontMask * 0.42;
 
-// White foam crest at the dynamic boundary REMOVED at user request — the
-// boundary motion + wet sand on the LAND side already convey the wave
-// washing in/out, no painted white line needed. Pale-cyan trail kept (very
-// subtle) for a hint of water reflection just offshore of the boundary.
-float signedShoreFrag = islandSDF(vWaterWorldXZ);
-float distOutside = max(0.0, signedShoreFrag - vFrontSDF);
-float trailMask = (1.0 - smoothstep(0.10, 1.2, distOutside))
-  * vWashAmp * oceanFlag;
-float foamCrest = 0.0;  // legacy — kept zero so the alpha calc below stays valid
+// --- Foam ribbon: DISABLED for the 2026-05-03 shore-tint experiment --------
+// The foam ribbon hugged the analytical SDF shore (smooth curve), but the
+// LAND mesh is grid-aligned (1m stair-step). The mismatch read as a wavy
+// white band offset from the actual sand silhouette. Disabled to validate
+// the cleaner look the user requested. Re-enable by restoring the foamRibbon
+// + foamCells + foamCrest computation below if foam comes back.
+float foamCrest = 0.0;
 float foamMask = 0.0;
-baseColor = mix(baseColor, vec3(0.55, 0.88, 0.96), trailMask * 0.25);
 
 // Offshore whitecaps removed at user request 2026-05-02 — the white speckles
 // scattered across the deep ocean read as cloud reflections / dirty water
@@ -541,7 +562,7 @@ baseColor = mix(baseColor, vec3(0.55, 0.88, 0.96), trailMask * 0.25);
 float whitecapMask = 0.0;
 
 // Legacy stand-ins (alpha calc below still references these names).
-float washVisibility = trailMask;
+float washVisibility = foamCrest;
 float washFoam = foamCrest;
 
 // --- Alpha shaping --------------------------------------------------------------

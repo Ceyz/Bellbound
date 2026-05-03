@@ -7,8 +7,16 @@ import {
   getPlayerStandingHeight,
 } from './scene/heightmap';
 import { GRID_D, GRID_W, Surface, TERRAIN_ORIGIN, Tier, getTerrainGrid, wouldEditMaintainTierMass } from './scene/terrain/TerrainGrid';
-import { bootTerrain, type IslandMintTerrainFields } from './scene/terrain/terrainSave';
-import { addBuiltStructure, bootBuiltStructures, canEditCellUnderStructures, forwardOf, getBuiltStructures, type BuiltStructure } from './scene/terrain/builtStructure';
+import { bootTerrain, serializeTerrain, type IslandMintTerrainFields } from './scene/terrain/terrainSave';
+import {
+  addBuiltStructure,
+  bootBuiltStructures,
+  canEditCellUnderStructures,
+  forwardOf,
+  getBuiltStructures,
+  serializeBuiltStructure,
+  type BuiltStructure,
+} from './scene/terrain/builtStructure';
 import { findBridgePlacement } from './scene/terrain/bridgePlacement';
 import { findTieredPlacement } from './scene/terrain/tieredPlacement';
 import { syncStructureMeshes } from './scene/structureMeshes';
@@ -97,6 +105,28 @@ declare global {
   }
 }
 
+type BellboundSaveState = {
+  terrain?: unknown;
+  built_structures?: unknown;
+};
+
+const DEV_LOCAL_SAVE_KEY = 'bellbound:localSave:v1';
+
+function readDevLocalSaveState(): BellboundSaveState | undefined {
+  if (!import.meta.env.DEV) return undefined;
+  try {
+    const raw = window.localStorage.getItem(DEV_LOCAL_SAVE_KEY);
+    if (!raw) return undefined;
+    const parsed = JSON.parse(raw) as { state?: unknown };
+    if (!parsed || typeof parsed !== 'object') return undefined;
+    if (!parsed.state || typeof parsed.state !== 'object') return undefined;
+    return parsed.state as BellboundSaveState;
+  } catch (err) {
+    console.warn('[bellbound] local dev save ignored:', err);
+    return undefined;
+  }
+}
+
 // Wrapped in `async function main()` so the `await bootTerrain(...)` below is a
 // regular await, not a top-level await. Vite's default esbuild build target
 // (es2020 / chrome87 / safari14) does not support TLA — production build fails
@@ -129,7 +159,7 @@ renderer.shadowMap.type = THREE.PCFSoftShadowMap;
 // inscription fetch (Phase A). With neither hook set, `bootTerrain` ends up
 // at the analytical-bake fallback path — same outcome as the previous lazy
 // `getTerrainGrid()` first read, just with deterministic boot timing.
-const __saveState = window.__BELLBOUND_SAVE__?.state;
+const __saveState = window.__BELLBOUND_SAVE__?.state ?? readDevLocalSaveState();
 const __mintFields = window.__BELLBOUND_MINT__?.initial_state;
 const __bootResult = await bootTerrain({ save: __saveState?.terrain, mint: __mintFields });
 if (__bootResult.fatalMintErrors.length > 0) {
@@ -292,6 +322,36 @@ mountBuildModeUI(buildMode);
 
 const terraformGrid = getTerrainGrid();
 
+let devLocalSaveTimer: number | null = null;
+
+function scheduleDevLocalSave(): void {
+  if (!import.meta.env.DEV) return;
+  if (devLocalSaveTimer !== null) {
+    window.clearTimeout(devLocalSaveTimer);
+  }
+  devLocalSaveTimer = window.setTimeout(() => {
+    devLocalSaveTimer = null;
+    void writeDevLocalSave();
+  }, 180);
+}
+
+async function writeDevLocalSave(): Promise<void> {
+  if (!import.meta.env.DEV) return;
+  try {
+    const terrain = await serializeTerrain(terraformGrid);
+    const built_structures = getBuiltStructures().map(serializeBuiltStructure);
+    window.localStorage.setItem(
+      DEV_LOCAL_SAVE_KEY,
+      JSON.stringify({
+        saved_at: new Date().toISOString(),
+        state: { terrain, built_structures },
+      }),
+    );
+  } catch (err) {
+    console.warn('[bellbound] local dev save failed:', err);
+  }
+}
+
 // Step 9.2 / 9.4: built-structure meshes. One Group child per placed bridge,
 // staircase, or incline; rebuilt on every placement / removal. Initial sync
 // covers any structures the boot path loaded from `state.built_structures`.
@@ -312,6 +372,7 @@ if (import.meta.env.DEV) {
     const result = addBuiltStructure(placement.serialized, GRID_W, GRID_D);
     if (!result.structure) return null;
     rebuildStructureMeshes();
+    scheduleDevLocalSave();
     return result.structure.id;
   };
   window.__BELLBOUND_DEBUG_PLACE_TIERED__ = (cx: number, cz: number, kind: 'staircase' | 'incline') => {
@@ -320,6 +381,7 @@ if (import.meta.env.DEV) {
     const result = addBuiltStructure(placement.serialized, GRID_W, GRID_D);
     if (!result.structure) return null;
     rebuildStructureMeshes();
+    scheduleDevLocalSave();
     return result.structure.id;
   };
 }
@@ -427,18 +489,17 @@ function undoLastStroke(): void {
     terraformGrid.setRawByte(stroke[i].cx, stroke[i].cz, stroke[i].byteBefore);
   }
   rebuildTerrain(island);
+  scheduleDevLocalSave();
 }
 
 // AC-style restriction: sand (the coastal beach band) cannot be terraformed —
-// no cliffs raised on it, no water dug into it. Threshold 0.4 mirrors the
-// `surfaceClassification.ts` "fully sand" cutoff so the visible sand zone and
-// the gameplay restriction agree. Once a cell is at T1+ it's a cliff plateau,
-// no longer "sandy" semantically, so further raises stay legal.
-const BEACH_TERRAFORM_THRESHOLD = 0.4;
+// no cliffs raised on it, no water dug into it. Aligned with the grid's
+// `isBeachCell` so the gameplay block exactly matches the visible sand cells
+// (LAND-T0 within `BEACH_RADIUS_CELLS` of an OCEAN cell). Once a cell is at
+// T1+ it's a cliff plateau, no longer "sandy" semantically, so further raises
+// stay legal.
 function isBeachCell(cx: number, cz: number): boolean {
-  const wx = TERRAIN_ORIGIN.x + (cx + 0.5);
-  const wz = TERRAIN_ORIGIN.z + (cz + 0.5);
-  return sampleIslandShape(wx, wz).beachT >= BEACH_TERRAFORM_THRESHOLD;
+  return terraformGrid.isBeachCell(cx, cz);
 }
 /**
  * True if the player's collision circle would overlap the cell's 1×1
@@ -479,16 +540,16 @@ buildMode.registerTool(gateByStructureBlock(trackUndo({
     // raised flush against them never clips into their body.
     if (playerOverlapsCell(cx, cz)) return false;
     if (currentTier === Tier.T0 && isBeachCell(cx, cz)) return false;
-    // Tier-mass rule: the post-raise grid must still have every tier-T
-    // component containing a 2×2 block of LAND tier ≥ T cells.
-    const newTier = (currentTier + 1) as Tier;
-    if (!wouldEditMaintainTierMass(terraformGrid, cx, cz, Surface.LAND, newTier)) return false;
+    // Allow incremental cliff creation. Requiring the post-raise state to
+    // already contain a 2x2 plateau makes the first cell of every new cliff
+    // permanently red, because the editor applies one cell at a time.
     return true;
   },
   apply: (cx, cz) => {
     const err = terraformGrid.raiseCell(cx, cz);
     if (err) return err.reason;
     rebuildTerrain(island);
+    scheduleDevLocalSave();
     spawnFxAtCell(cx, cz, 'cliff');
     return null;
   },
@@ -521,6 +582,7 @@ buildMode.registerTool(gateByStructureBlock(trackUndo({
     const err = terraformGrid.lowerCell(cx, cz);
     if (err) return err.reason;
     rebuildTerrain(island);
+    scheduleDevLocalSave();
     spawnFxAtCell(cx, cz, 'cliff');
     return null;
   },
@@ -553,6 +615,7 @@ buildMode.registerTool(gateByStructureBlock(trackUndo({
     const err = terraformGrid.digFreshwater(cx, cz);
     if (err) return err.reason;
     rebuildTerrain(island);
+    scheduleDevLocalSave();
     spawnFxAtCell(cx, cz, 'water');
     return null;
   },
@@ -574,6 +637,7 @@ buildMode.registerTool(gateByStructureBlock(trackUndo({
     const err = terraformGrid.fillFreshwater(cx, cz);
     if (err) return err.reason;
     rebuildTerrain(island);
+    scheduleDevLocalSave();
     spawnFxAtCell(cx, cz, 'water');
     return null;
   },
@@ -610,6 +674,7 @@ for (const { kind, label, style, tint } of PATH_STYLES) {
       const err = terraformGrid.paintPath(cx, cz, style);
       if (err) return err.reason;
       updatePathMaskCell(island, cx, cz);
+      scheduleDevLocalSave();
       spawnFxAtCell(cx, cz, 'path', tint);
       return null;
     },
@@ -628,6 +693,7 @@ buildMode.registerTool(gateByStructureBlock(trackUndo({
     const err = terraformGrid.erasePath(cx, cz);
     if (err) return err.reason;
     updatePathMaskCell(island, cx, cz);
+    scheduleDevLocalSave();
     spawnFxAtCell(cx, cz, 'path', 0xd4b08a);
     return null;
   },
@@ -657,6 +723,7 @@ buildMode.registerTool({
     const result = addBuiltStructure(placement.serialized, GRID_W, GRID_D);
     if (!result.structure) return result.errors[0] ?? 'add_structure_failed';
     rebuildStructureMeshes();
+    scheduleDevLocalSave();
     return null;
   },
 });
@@ -679,6 +746,7 @@ function registerTieredTool(kind: 'staircase' | 'incline', label: string): void 
       const result = addBuiltStructure(placement.serialized, GRID_W, GRID_D);
       if (!result.structure) return result.errors[0] ?? 'add_structure_failed';
       rebuildStructureMeshes();
+      scheduleDevLocalSave();
       return null;
     },
   });
@@ -817,6 +885,50 @@ resize();
 
 const clock = new THREE.Clock();
 const preResolvePosition = new THREE.Vector3();
+const smoothShoreCandidate = new THREE.Vector3();
+const SHORE_COLLISION_CLEARANCE = PLAYER_COLLISION_RADIUS * 0.45;
+const SHORE_SLIDE_ZONE_METERS = PLAYER_COLLISION_RADIUS + 0.35;
+
+function canStandOnSmoothOceanShore(x: number, z: number): boolean {
+  return sampleIslandShape(x, z).sdf <= -SHORE_COLLISION_CLEARANCE;
+}
+
+function isNearSmoothOceanShore(x: number, z: number): boolean {
+  return sampleIslandShape(x, z).sdf > -(SHORE_COLLISION_CLEARANCE + SHORE_SLIDE_ZONE_METERS);
+}
+
+function resolveSmoothOceanShore(position: THREE.Vector3): boolean {
+  let moved = false;
+  for (let i = 0; i < 4; i += 1) {
+    const sdf = sampleIslandShape(position.x, position.z).sdf;
+    const penetration = sdf + SHORE_COLLISION_CLEARANCE;
+    if (penetration <= 0) return moved;
+
+    const normal = sampleSmoothShoreNormal(position.x, position.z);
+    position.x -= normal.x * (penetration + 0.002);
+    position.z -= normal.z * (penetration + 0.002);
+    moved = true;
+  }
+  return moved;
+}
+
+function removeOutwardShoreVelocity(position: THREE.Vector3): void {
+  if (!isNearSmoothOceanShore(position.x, position.z)) return;
+  const normal = sampleSmoothShoreNormal(position.x, position.z);
+  const outwardSpeed = velocity.x * normal.x + velocity.z * normal.z;
+  if (outwardSpeed <= 0) return;
+  velocity.x -= normal.x * outwardSpeed;
+  velocity.z -= normal.z * outwardSpeed;
+}
+
+function sampleSmoothShoreNormal(x: number, z: number): { x: number; z: number } {
+  const e = 0.35;
+  const dx = sampleIslandShape(x + e, z).sdf - sampleIslandShape(x - e, z).sdf;
+  const dz = sampleIslandShape(x, z + e).sdf - sampleIslandShape(x, z - e).sdf;
+  const len = Math.hypot(dx, dz);
+  if (len < 0.0001) return { x: 1, z: 0 };
+  return { x: dx / len, z: dz / len };
+}
 
 renderer.setAnimationLoop(() => {
   const delta = Math.min(clock.getDelta(), 0.05);
@@ -879,10 +991,17 @@ renderer.setAnimationLoop(() => {
   const isBlockedAt = (x: number, z: number): boolean => {
     for (const [dx, dz] of bodyProbes) {
       const [probeCx, probeCz] = terrainGrid.worldToCell(x + dx, z + dz);
+      if (!terrainGrid.cellInBounds(probeCx, probeCz)) return true;
+      const surf = terrainGrid.getSurface(probeCx, probeCz);
+      if (surf === Surface.VOID) return true;
+      // The body probes may overlap ocean so the curved shore resolver below
+      // can slide the player along the beach. The center may only use an ocean
+      // cell when it is safely inside the SDF beach patch we actually render.
+      if (surf === Surface.OCEAN) {
+        if (dx === 0 && dz === 0) return !canStandOnSmoothOceanShore(x, z);
+        continue;
+      }
       if (playerOnStructure) {
-        if (!terrainGrid.cellInBounds(probeCx, probeCz)) return true;
-        const surf = terrainGrid.getSurface(probeCx, probeCz);
-        if (surf === Surface.VOID || surf === Surface.OCEAN) return true;
         continue;
       }
       if (!terrainGrid.isTraversable(prevCx, prevCz, probeCx, probeCz, builtStructures)) return true;
@@ -890,16 +1009,52 @@ renderer.setAnimationLoop(() => {
     return false;
   };
 
-  const xBlocked = isBlockedAt(desiredX, prevZ);
-  const zBlocked = isBlockedAt(prevX, desiredZ);
+  smoothShoreCandidate.set(desiredX, prevHeight, desiredZ);
+  clampPlayerToGround(smoothShoreCandidate);
+  const shoreProjected = resolveSmoothOceanShore(smoothShoreCandidate);
+  const useSmoothShoreSlide =
+    shoreProjected
+    || isNearSmoothOceanShore(prevX, prevZ)
+    || isNearSmoothOceanShore(smoothShoreCandidate.x, smoothShoreCandidate.z);
 
-  island.player.position.x = xBlocked ? prevX : desiredX;
-  island.player.position.z = zBlocked ? prevZ : desiredZ;
-  if (xBlocked) velocity.x = 0;
-  if (zBlocked) velocity.z = 0;
+  if (useSmoothShoreSlide && !isBlockedAt(smoothShoreCandidate.x, smoothShoreCandidate.z)) {
+    island.player.position.x = smoothShoreCandidate.x;
+    island.player.position.z = smoothShoreCandidate.z;
+    removeOutwardShoreVelocity(island.player.position);
+  } else {
+    const xBlocked = isBlockedAt(desiredX, prevZ);
+    const zBlocked = isBlockedAt(prevX, desiredZ);
+
+    island.player.position.x = xBlocked ? prevX : desiredX;
+    island.player.position.z = zBlocked ? prevZ : desiredZ;
+    if (xBlocked) velocity.x = 0;
+    if (zBlocked) velocity.z = 0;
+  }
 
   resolveCircleObstacles(island.player.position, island.obstacles);
   clampPlayerToGround(island.player.position);
+  const beforeShoreResolveX = island.player.position.x;
+  const beforeShoreResolveZ = island.player.position.z;
+  resolveSmoothOceanShore(island.player.position);
+  removeOutwardShoreVelocity(island.player.position);
+  const [shoreCx, shoreCz] = terrainGrid.worldToCell(
+    island.player.position.x,
+    island.player.position.z,
+  );
+  const shoreSurface = terrainGrid.cellInBounds(shoreCx, shoreCz)
+    ? terrainGrid.getSurface(shoreCx, shoreCz)
+    : Surface.VOID;
+  if (
+    shoreSurface === Surface.VOID
+    || (shoreSurface === Surface.OCEAN && !canStandOnSmoothOceanShore(
+      island.player.position.x,
+      island.player.position.z,
+    ))
+  ) {
+    island.player.position.x = beforeShoreResolveX;
+    island.player.position.z = beforeShoreResolveZ;
+    velocity.set(0, 0, 0);
+  }
 
   // pushPlayerOutOfRiver is intentionally NOT called: with strict
   // isTraversable + bridge connectivity (Step 9.3) the player cannot enter a

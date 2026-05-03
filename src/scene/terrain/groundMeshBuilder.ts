@@ -1,5 +1,18 @@
 import * as THREE from 'three';
-import { Surface, type TerrainGrid } from './TerrainGrid';
+import {
+  BEACH_LOWER_OFFSET_METERS,
+  Surface,
+  Tier,
+  type TerrainGrid,
+} from './TerrainGrid';
+import {
+  SMOOTH_BEACH_BOTTOM_INSET_METERS,
+  SMOOTH_BEACH_TOP_INSET_METERS,
+  smoothBeachHeightAt,
+  smoothBeachInlandDistance,
+} from './beachGeometry';
+
+const BEACH_CELL_SUBDIVISIONS = 12;
 
 /**
  * Builds the ground mesh from a TerrainGrid (Step 3 of the terraforming refactor).
@@ -30,31 +43,64 @@ export function buildGroundMesh(
 
   let vertexCount = 0;
 
-  grid.forEachSolidCell((cx, cz, _cell, topY) => {
+  grid.forEachSolidCell((cx, cz, cell, topY) => {
     const x0 = grid.originX + cx * grid.cellSize;
     const x1 = x0 + grid.cellSize;
     const z0 = grid.originZ + cz * grid.cellSize;
     const z1 = z0 + grid.cellSize;
 
-    // 4 corners CCW from SW: SW, SE, NE, NW
-    positions.push(
-      x0, topY, z0,
-      x1, topY, z0,
-      x1, topY, z1,
-      x0, topY, z1,
-    );
-    for (let i = 0; i < 4; i += 1) normals.push(0, 1, 0);
-    uvs.push(0, 0, 1, 0, 1, 1, 0, 1);
+    if (cell.surface === Surface.LAND && cell.tier === Tier.T0) {
+      vertexCount = pushBeachAwareLandCell(
+        positions,
+        normals,
+        uvs,
+        indices,
+        vertexCount,
+        x0,
+        x1,
+        z0,
+        z1,
+      );
+      return;
+    }
 
-    const v = vertexCount;
-    // Two triangles, CCW order WHEN VIEWED FROM ABOVE so the cross-product
-    // normal points +Y (up). Three.js default `FrontSide` culls back-facing
-    // triangles, so getting the winding wrong here makes the entire ground
-    // mesh invisible from a top-down camera (the bug that initially broke
-    // Step 3: the user saw the water plane bleeding through transparent ground).
-    indices.push(v, v + 2, v + 1);
-    indices.push(v, v + 3, v + 2);
-    vertexCount += 4;
+    vertexCount = pushGroundQuad(
+      positions,
+      normals,
+      uvs,
+      indices,
+      vertexCount,
+      x0,
+      x1,
+      z0,
+      z1,
+      topY,
+    );
+  });
+
+  // Fill the fractional cells that the smooth SDF shoreline cuts through but
+  // the 1m terrain grid classifies as OCEAN. The splat shader clips these
+  // patches back to the SDF, so they become curved sand edge pieces instead of
+  // blue holes under the visible beach.
+  grid.forEachCell((cx, cz, cell) => {
+    if (cell.surface !== Surface.OCEAN) return;
+    const x0 = grid.originX + cx * grid.cellSize;
+    const x1 = x0 + grid.cellSize;
+    const z0 = grid.originZ + cz * grid.cellSize;
+    const z1 = z0 + grid.cellSize;
+    if (!smoothBeachCellTouchesIsland(x0, x1, z0, z1)) return;
+
+    vertexCount = pushBeachAwareLandCell(
+      positions,
+      normals,
+      uvs,
+      indices,
+      vertexCount,
+      x0,
+      x1,
+      z0,
+      z1,
+    );
   });
 
   const geometry = new THREE.BufferGeometry();
@@ -62,12 +108,147 @@ export function buildGroundMesh(
   geometry.setAttribute('normal', new THREE.Float32BufferAttribute(normals, 3));
   geometry.setAttribute('uv', new THREE.Float32BufferAttribute(uvs, 2));
   geometry.setIndex(indices);
+  geometry.computeVertexNormals();
   geometry.computeBoundingSphere();
   geometry.computeBoundingBox();
 
   const mesh = new THREE.Mesh(geometry, material);
   mesh.name = 'greybox-ground';
   return mesh;
+}
+
+function smoothBeachCellTouchesIsland(
+  x0: number,
+  x1: number,
+  z0: number,
+  z1: number,
+): boolean {
+  return (
+    smoothBeachInlandDistance(x0, z0) >= -0.05
+    || smoothBeachInlandDistance(x1, z0) >= -0.05
+    || smoothBeachInlandDistance(x1, z1) >= -0.05
+    || smoothBeachInlandDistance(x0, z1) >= -0.05
+    || smoothBeachInlandDistance((x0 + x1) * 0.5, (z0 + z1) * 0.5) >= -0.05
+  );
+}
+
+function pushBeachAwareLandCell(
+  positions: number[],
+  normals: number[],
+  uvs: number[],
+  indices: number[],
+  vertexCount: number,
+  x0: number,
+  x1: number,
+  z0: number,
+  z1: number,
+): number {
+  const cornerDistances = [
+    smoothBeachInlandDistance(x0, z0),
+    smoothBeachInlandDistance(x1, z0),
+    smoothBeachInlandDistance(x1, z1),
+    smoothBeachInlandDistance(x0, z1),
+  ];
+  const minD = Math.min(...cornerDistances);
+  const maxD = Math.max(...cornerDistances);
+
+  if (maxD <= SMOOTH_BEACH_BOTTOM_INSET_METERS) {
+    return pushGroundQuad(
+      positions, normals, uvs, indices, vertexCount,
+      x0, x1, z0, z1, -BEACH_LOWER_OFFSET_METERS,
+    );
+  }
+  if (minD >= SMOOTH_BEACH_TOP_INSET_METERS) {
+    return pushGroundQuad(
+      positions, normals, uvs, indices, vertexCount,
+      x0, x1, z0, z1, 0,
+    );
+  }
+
+  let nextVertex = vertexCount;
+  const stepX = (x1 - x0) / BEACH_CELL_SUBDIVISIONS;
+  const stepZ = (z1 - z0) / BEACH_CELL_SUBDIVISIONS;
+
+  for (let iz = 0; iz < BEACH_CELL_SUBDIVISIONS; iz += 1) {
+    for (let ix = 0; ix < BEACH_CELL_SUBDIVISIONS; ix += 1) {
+      const sx0 = x0 + ix * stepX;
+      const sx1 = sx0 + stepX;
+      const sz0 = z0 + iz * stepZ;
+      const sz1 = sz0 + stepZ;
+
+      nextVertex = pushGroundPatch(
+        positions, normals, uvs, indices, nextVertex,
+        sx0, sx1, sz0, sz1,
+        smoothBeachHeightAt(sx0, sz0),
+        smoothBeachHeightAt(sx1, sz0),
+        smoothBeachHeightAt(sx1, sz1),
+        smoothBeachHeightAt(sx0, sz1),
+      );
+    }
+  }
+
+  return nextVertex;
+}
+
+function pushGroundQuad(
+  positions: number[],
+  normals: number[],
+  uvs: number[],
+  indices: number[],
+  vertexCount: number,
+  x0: number,
+  x1: number,
+  z0: number,
+  z1: number,
+  y: number,
+): number {
+  positions.push(
+    x0, y, z0,
+    x1, y, z0,
+    x1, y, z1,
+    x0, y, z1,
+  );
+  for (let i = 0; i < 4; i += 1) normals.push(0, 1, 0);
+  uvs.push(0, 0, 1, 0, 1, 1, 0, 1);
+
+  const v = vertexCount;
+  // Two triangles, CCW order WHEN VIEWED FROM ABOVE so the cross-product
+  // normal points +Y (up). Three.js default `FrontSide` culls back-facing
+  // triangles, so getting the winding wrong here makes the entire ground
+  // mesh invisible from a top-down camera.
+  indices.push(v, v + 2, v + 1);
+  indices.push(v, v + 3, v + 2);
+  return vertexCount + 4;
+}
+
+function pushGroundPatch(
+  positions: number[],
+  normals: number[],
+  uvs: number[],
+  indices: number[],
+  vertexCount: number,
+  x0: number,
+  x1: number,
+  z0: number,
+  z1: number,
+  y00: number,
+  y10: number,
+  y11: number,
+  y01: number,
+): number {
+  positions.push(
+    x0, y00, z0,
+    x1, y10, z0,
+    x1, y11, z1,
+    x0, y01, z1,
+  );
+  for (let i = 0; i < 4; i += 1) normals.push(0, 1, 0);
+  uvs.push(0, 0, 1, 0, 1, 1, 0, 1);
+
+  const v = vertexCount;
+  indices.push(v, v + 2, v + 1);
+  indices.push(v, v + 3, v + 2);
+  return vertexCount + 4;
 }
 
 /**

@@ -124,10 +124,55 @@ const RECIPES: Record<SurfaceTextureKey, TextureRecipe> = {
 export function createSurfaceTextureSet(): SurfaceTextureSet {
   const set = {} as SurfaceTextureSet;
   for (const key of Object.keys(RECIPES) as SurfaceTextureKey[]) {
-    set[key] = paintTextureFromRecipe(key, RECIPES[key]);
+    set[key] = key === 'cliffSide'
+      ? paintAcnhCliffSideTexture(key)
+      : paintTextureFromRecipe(key, RECIPES[key]);
   }
 
   return set;
+}
+
+function paintAcnhCliffSideTexture(name: SurfaceTextureKey): THREE.DataTexture {
+  const data = new Uint8Array(TEXTURE_SIZE * TEXTURE_SIZE * 4);
+  const random = mulberry32(RECIPES.cliffSide.seed);
+  const twoPi = Math.PI * 2;
+
+  for (let y = 0; y < TEXTURE_SIZE; y += 1) {
+    const v = y / (TEXTURE_SIZE - 1);
+    const bottomShadow = 1 - smoothstep(v, 0.02, 0.34);
+    const topWarmth = 1 - smoothstep(v, 0.74, 1.0);
+
+    for (let x = 0; x < TEXTURE_SIZE; x += 1) {
+      const u = x / TEXTURE_SIZE;
+      const idx = (y * TEXTURE_SIZE + x) * 4;
+      const wobble =
+        Math.sin(v * twoPi * 1.6 + Math.sin(u * twoPi * 3.0) * 0.35) * 0.045
+        + Math.sin(v * twoPi * 4.3 + 1.2) * 0.018;
+      const broadPanel = Math.sin((u * 5.0 + wobble) * twoPi) * 0.5 + 0.5;
+      const panelShade = (broadPanel - 0.5) * 0.22;
+      const verticalSeam = Math.pow(1 - Math.abs(broadPanel * 2 - 1), 6);
+      const hairline = Math.pow(
+        Math.max(0, Math.cos((u * 18.0 + wobble * 2.5) * twoPi)),
+        18,
+      );
+      const grain = (random() - 0.5) * 0.055;
+      const shade =
+        1
+        + panelShade
+        + topWarmth * 0.055
+        - bottomShadow * 0.42
+        - verticalSeam * 0.32
+        - hairline * 0.24
+        + grain;
+
+      data[idx] = clamp255(170 * shade + 8 * broadPanel);
+      data[idx + 1] = clamp255(108 * shade + 6 * broadPanel);
+      data[idx + 2] = clamp255(76 * shade + 4 * broadPanel);
+      data[idx + 3] = 255;
+    }
+  }
+
+  return makeRepeatingTexture(data, `surface-${name}`);
 }
 
 function paintTextureFromRecipe(name: SurfaceTextureKey, recipe: TextureRecipe): THREE.DataTexture {
@@ -240,6 +285,13 @@ function wrap(value: number, size: number) {
 
 function clamp255(value: number) {
   return Math.max(0, Math.min(255, Math.round(value)));
+}
+
+function smoothstep(value: number, min: number, max: number) {
+  if (value <= min) return 0;
+  if (value >= max) return 1;
+  const t = (value - min) / (max - min);
+  return t * t * (3 - 2 * t);
 }
 
 /**

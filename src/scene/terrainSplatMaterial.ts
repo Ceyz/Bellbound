@@ -4,6 +4,10 @@ import { ISLAND_SHAPE } from './islandShape';
 import type { SurfaceTextureSet } from './proceduralTextures';
 import { MAX_SHORE_DISTANCE_METERS, type SurfaceMaps } from './surfaceMaps';
 import { GRID_D, GRID_W, TERRAIN_ORIGIN } from './terrain/TerrainGrid';
+import {
+  SMOOTH_BEACH_BOTTOM_INSET_METERS,
+  SMOOTH_BEACH_TOP_INSET_METERS,
+} from './terrain/beachGeometry';
 
 /**
  * Terrain ground material: splat-textured with anti-tiling.
@@ -42,10 +46,8 @@ export function createTerrainSplatMaterial(options: TerrainSplatOptions): THREE.
     vertexColors: false,
   });
   material.name = 'terrain-splat';
-  // Combined with WebGLRenderer's antialias=true (MSAA), alphaToCoverage turns
-  // sub-1.0 alpha into per-sample coverage masks. Used by the shore fragment
-  // body below to feed a screen-space-AA shoreline, killing the staircase
-  // pattern the previous hard `discard > 0.5` produced at the sand→water edge.
+  // Use static SDF coverage only at the island outline. The terrain edge stays
+  // smooth, but it no longer breathes with the water and reveals blue slivers.
   material.alphaToCoverage = true;
 
   const splatUniforms: Record<string, THREE.IUniform> = {
@@ -94,7 +96,7 @@ export function createTerrainSplatMaterial(options: TerrainSplatOptions): THREE.
       .replace('#include <map_fragment>', FRAGMENT_SPLAT_BODY);
   };
 
-  material.customProgramCacheKey = () => `terrain-splat:v25:${tileSizeMeters}`;
+  material.customProgramCacheKey = () => `terrain-splat:v33:${tileSizeMeters}`;
   material.needsUpdate = true;
 
   return material;
@@ -212,6 +214,15 @@ vec2 splatUv = (vTerrainWorldXZ + uTerrainExtents * 0.5) / uTerrainExtents;
 // once the bake uses higher precision (R16 or signed-distance JFA) and the
 // shader's shoreCoverage is recomputed against grid-cell granularity.
 float signedShoreMeters = terrainIslandSDF(vTerrainWorldXZ);
+float inlandShoreMeters = -signedShoreMeters;
+float beachTopInset = ${SMOOTH_BEACH_TOP_INSET_METERS.toFixed(3)};
+float beachBottomInset = ${SMOOTH_BEACH_BOTTOM_INSET_METERS.toFixed(3)};
+float beachEdgeAa = max(fwidth(inlandShoreMeters) * 1.5, 0.035);
+float sdfSandMask = 1.0 - smoothstep(
+  beachTopInset - beachEdgeAa,
+  beachTopInset + beachEdgeAa,
+  inlandShoreMeters
+);
 
 // --- Dynamic shore boundary (wave wash on the visible coast) --------------
 // swashCycle derived from swashSignal — the Gerstner wave 1 phase at THIS
@@ -228,11 +239,19 @@ float swashCycle = swashHeight;
 float swashThreshold = mix(-0.55, -0.85, swashCycle);
 float foamVisibility = smoothstep(0.55, 0.95, swashHeight);
 
-if (signedShoreMeters > swashThreshold + 0.4) discard;
-float shoreAa = clamp(fwidth(signedShoreMeters), 0.02, 0.15);
-float shoreCoverage = 1.0 - smoothstep(swashThreshold - shoreAa, swashThreshold + shoreAa, signedShoreMeters);
-
 vec4 splat = texture2D(uSplatMap, splatUv);
+// Discard purely based on the splat being void (i.e. the JS classifier
+// returned kind='void' because the grid cell is OCEAN/VOID). Previous
+// behaviour discarded based on the analytical SDF, which killed texels
+// inside grid LAND cells whose centers fell just inside the SDF but whose
+// offshore portion extended past it — sand cells at the eastern coast lost
+// most of their visible area to that. The new check trusts the grid as the
+// source of truth for what's a renderable surface.
+float splatTotal = splat.r + splat.g + splat.b + splat.a;
+float shoreAa = clamp(fwidth(signedShoreMeters) * 1.5, 0.02, 0.15);
+float shoreCoverage = 1.0 - smoothstep(-shoreAa, shoreAa, signedShoreMeters);
+float virtualShoreLand = (1.0 - step(0.1, splatTotal)) * shoreCoverage;
+if (splatTotal < 0.1 && virtualShoreLand < 0.01) discard;
 float ao = texture2D(uAoMap, splatUv).r;
 float cliffEdge = texture2D(uCliffEdgeMap, splatUv).r;
 float shoreShadow = texture2D(uShoreMask, splatUv).r;
@@ -246,21 +265,19 @@ vec3 sandColor = sampleAntiTiled(uTexSand, vTerrainWorldXZ, antiTileBlend);
 vec3 dirtColor = sampleAntiTiled(uTexDirt, vTerrainWorldXZ, antiTileBlend);
 vec3 cliffColor = sampleAntiTiled(uTexCliff, vTerrainWorldXZ, antiTileBlend);
 
-// --- Crunchy step-noise edges (ACNH-style organic-but-crisp surface boundaries).
-// The splatmap's blended weights are perturbed by world-space noise then resolved
-// via a noise-jittered argmax. Two different noise patterns keep the grass↔sand
-// and grass↔dirt boundaries visually distinct.
-float edgeNoiseGS = (terrainNoise(vTerrainWorldXZ * 0.95) - 0.5) * 0.42;
-float edgeNoiseGD = (terrainNoise(vTerrainWorldXZ * 1.10 + vec2(11.0, 7.0)) - 0.5) * 0.42;
-float gW = clamp(splat.r + edgeNoiseGS + edgeNoiseGD, 0.0, 1.0);
-float sW = clamp(splat.g - edgeNoiseGS, 0.0, 1.0);
-float dW = clamp(splat.b - edgeNoiseGD, 0.0, 1.0);
+// The beach boundary follows the analytical shore SDF directly. Do not run the
+// old noise-jittered argmax here: it creates toothy green triangles along the
+// grass/sand line.
+float topLandWeight = max(clamp(splat.r + splat.g, 0.0, 1.0), virtualShoreLand);
+float gW = topLandWeight * (1.0 - sdfSandMask);
+float sW = topLandWeight * sdfSandMask;
+float dW = splat.b;
 float cW = splat.a;
 
-float pickGrass = step(sW, gW) * step(dW, gW) * step(cW, gW);
-float pickSand = step(gW, sW) * step(dW, sW) * step(cW, sW);
-float pickDirt = step(gW, dW) * step(sW, dW) * step(cW, dW);
-float pickCliff = step(gW, cW) * step(sW, cW) * step(dW, cW);
+float pickGrass = gW;
+float pickSand = sW;
+float pickDirt = dW;
+float pickCliff = cW;
 float pickSum = max(pickGrass + pickSand + pickDirt + pickCliff, 0.0001);
 pickGrass /= pickSum;
 pickSand /= pickSum;
@@ -271,6 +288,13 @@ vec3 surfaceColor = grassColor * pickGrass
   + sandColor * pickSand
   + dirtColor * pickDirt
   + cliffColor * pickCliff;
+
+float beachSlopeMask =
+  smoothstep(beachBottomInset - 0.08, beachBottomInset + 0.08, inlandShoreMeters)
+  * (1.0 - smoothstep(beachTopInset - 0.08, beachTopInset + 0.08, inlandShoreMeters))
+  * pickSand;
+vec3 beachBankColor = mix(sandColor, dirtColor * vec3(1.18, 1.06, 0.84), 0.34);
+surfaceColor = mix(surfaceColor, beachBankColor, beachSlopeMask * 0.72);
 
 // Offshore terrain is discarded above, so the water shader owns the underwater color.
 
@@ -310,7 +334,9 @@ vec3 surfaceColor = grassColor * pickGrass
   }
   tp.x -= clamp(tp.x, -2.0 * triR, 0.0);
   float triSdf = -length(tp) * sign(tp.y);
-  float triMask = (1.0 - smoothstep(0.0, 0.025, triSdf)) * motifPresent * pickGrass;
+  float triMask = (1.0 - smoothstep(0.0, 0.025, triSdf))
+    * motifPresent
+    * smoothstep(0.82, 0.98, pickGrass);
 
   // Two color variants alternating per cell: bright yellow-green or darker green.
   float yellowVariant = step(0.50, terrainHash(motifCell + vec2(11.7, 7.3)));
@@ -328,8 +354,8 @@ vec3 surfaceColor = grassColor * pickGrass
 // follows the actual splatmap boundary instead of every noise crossing — without
 // this fix, the noise-jittered weights produced random dark patches scattered
 // through the sand. fwidth gives a screen-space-tight band one pixel wide.
-float gsBoundaryDist = abs(splat.r - 0.5);
-float gsBandPx = max(fwidth(splat.r) * 2.5, 0.045);
+float gsBoundaryDist = abs(sdfSandMask - 0.5);
+float gsBandPx = max(fwidth(sdfSandMask) * 2.5, 0.045);
 float gsRim = 1.0 - smoothstep(0.0, gsBandPx, gsBoundaryDist);
 float sandSideShadow = gsRim * pickSand;
 float grassSideHilight = gsRim * pickGrass;
@@ -372,7 +398,13 @@ if (pathUv.x >= 0.0 && pathUv.x <= 1.0 && pathUv.y >= 0.0 && pathUv.y <= 1.0) {
 }
 
 surfaceColor *= 1.0 - ao * 0.4;
-surfaceColor = mix(surfaceColor, surfaceColor * vec3(0.55, 0.42, 0.32), cliffEdge * 0.6);
+// cliffEdge brown-rim tint disabled: with raised tiers using the same grass
+// texture as low ground, ANY rim tint dirtied the cliff top relative to the
+// surrounding bright ground and broke color continuity. The cliff TOP now
+// reads as identical grass to the ground; the cliff FACE owns its own
+// rocky look in the cliff-side mesh. cliffEdge value is sampled but unused
+// here — kept for the AO contribution baked elsewhere.
+// surfaceColor = mix(surfaceColor, surfaceColor * vec3(...), cliffEdge * 0.0);
 
 // --- Wet sand near the (animated) shore boundary --------------------------------
 // Subtle wet-sand tint within ~60 cm INLAND of the current dynamic boundary —

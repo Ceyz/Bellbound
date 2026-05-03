@@ -6,6 +6,13 @@ import {
   getTerrainGrid,
   tierHeight,
 } from './terrain/TerrainGrid';
+import { smoothBeachHeightAt, smoothBeachInlandDistance } from './terrain/beachGeometry';
+
+// Re-exports kept for any consumer that imported these legacy names through
+// heightmap. tierHeight/Surface stay relevant for the HEIGHTMAP constants block
+// below; `Tier` is also re-exported at the bottom of this file.
+void tierHeight;
+void Surface;
 
 /**
  * Façade over the editable `TerrainGrid` (Step 2 of the terraforming refactor,
@@ -49,19 +56,18 @@ export function getIslandHeight(worldX: number, worldZ: number): number {
   if (!grid.cellInBounds(cx, cz)) return 0;
 
   const cell = grid.getCell(cx, cz);
-
-  if (cell.surface === Surface.OCEAN || cell.surface === Surface.VOID) return 0;
-
-  if (cell.surface === Surface.FRESHWATER) {
-    return tierHeight(cell.tier) - FRESHWATER_BED_OFFSET_METERS;
+  if (cell.surface === Surface.LAND && cell.tier === Tier.T0) {
+    return smoothBeachHeightAt(worldX, worldZ);
+  }
+  if (cell.surface === Surface.OCEAN && smoothBeachInlandDistance(worldX, worldZ) >= 0) {
+    return smoothBeachHeightAt(worldX, worldZ);
   }
 
-  // LAND — flat at the cell's tier. The visible grass↔sand step (D16 shore
-  // lip) lands as a separate mini cliff-side mesh in Step 3 round 3; the
-  // analytical 18 cm beach dip that previously lived here was removed in
-  // Step 4 because it caused the player's feet to sink below the (flat) ground
-  // mesh by exactly that amount.
-  return tierHeight(cell.tier);
+  // Delegate to the grid's `cellHeight`, which already handles all surface
+  // kinds (LAND tier, FRESHWATER bed, OCEAN sea level) AND the ACNH beach
+  // dip for LAND-T0 cells adjacent to OCEAN. Returns NaN for VOID cells.
+  const h = grid.cellHeight(cx, cz);
+  return Number.isNaN(h) ? 0 : h;
 }
 
 export function getPlayerStandingHeight(worldX: number, worldZ: number): number {

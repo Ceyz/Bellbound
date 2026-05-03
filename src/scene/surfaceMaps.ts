@@ -192,7 +192,10 @@ function createDataTexture(
 }
 
 function getTransitionOcclusion(surface: SurfaceClassification) {
-  const cliffShadow = surface.cliffEdge * 0.72;
+  // cliffShadow disabled: raised tiers now share the grass texture with low
+  // ground, and the AO cliff-shadow band darkened the cliff top inland to a
+  // dirty olive that did not match the bright surrounding grass.
+  const cliffShadow = 0;
   const waterlineShadow = surface.riverBank * 0.18;
   const oceanEdgeShadow = surface.islandShore * 0.12;
   const pathShadow = surface.isPath ? 0.04 : 0;

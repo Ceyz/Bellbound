@@ -117,7 +117,9 @@ export function createIslandScene(): IslandScene {
     createWaterStylizedMaterial({ surfaceMaps }),
   );
   water.name = 'water-ring';
-  water.position.y = -0.20;
+  // Lowered from -0.20 to -0.40 so the deeper beach drop (BEACH_LOWER_OFFSET_METERS = 0.30)
+  // keeps dry sand above water surface — sand top sits at Y=-0.30, water at -0.40, 10cm clearance.
+  water.position.y = -0.40;
   water.receiveShadow = true;
   scene.add(water);
 
@@ -172,9 +174,9 @@ export function createIslandScene(): IslandScene {
   // just disable culling so the warp doesn't push them off-frame.
   disableFrustumCullingForRolling(waterfalls);
 
-  const cliffMaterials = new Set<THREE.MeshStandardMaterial>();
+  const cliffMaterials = new Set<THREE.Material>();
   cliffSideWalls.traverse((child) => {
-    if (child instanceof THREE.Mesh && child.material instanceof THREE.MeshStandardMaterial) {
+    if (child instanceof THREE.Mesh && child.material instanceof THREE.Material) {
       cliffMaterials.add(child.material);
     }
   });
@@ -336,9 +338,9 @@ export function rebuildTerrain(island: IslandScene): void {
 
   // 6. Re-apply rolling shader + ACNH lighting + shadow flags to the new cliff
   //    materials (the freshly created cliff side mesh has un-patched materials).
-  const cliffMaterials = new Set<THREE.MeshStandardMaterial>();
+  const cliffMaterials = new Set<THREE.Material>();
   island.cliffSideWalls.traverse((child) => {
-    if (child instanceof THREE.Mesh && child.material instanceof THREE.MeshStandardMaterial) {
+    if (child instanceof THREE.Mesh && child.material instanceof THREE.Material) {
       cliffMaterials.add(child.material);
     }
   });
@@ -404,7 +406,7 @@ export function tickIslandScene(
   const bobHeight = moving ? 0.035 : 0.012;
 
   island.playerBody.position.y = PLAYER_BODY_BASE_Y + Math.sin(elapsed * bobSpeed) * bobHeight;
-  island.water.position.y = -0.20 + Math.sin(elapsed * 1.8) * params.waveHeight * 0.08;
+  island.water.position.y = -0.40 + Math.sin(elapsed * 1.8) * params.waveHeight * 0.08;
   updateWaterStylizedMaterial(island.water.material, elapsed, params.waveHeight);
   updateFreshwaterStylizedMaterial(island.freshwater.material, elapsed);
   updateTerrainSplatMaterial(island.ground.material, elapsed);

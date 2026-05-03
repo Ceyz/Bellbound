@@ -1,7 +1,8 @@
 import { ISLAND_TERRAIN_DEPTH, ISLAND_TERRAIN_WIDTH } from '../player/movement';
 import { getIslandHeight, isInRiver, isOnCliff } from './heightmap';
 import { sampleIslandShape } from './islandShape';
-import { Surface, getTerrainGrid } from './terrain/TerrainGrid';
+import { Surface, Tier, getTerrainGrid } from './terrain/TerrainGrid';
+import { isSmoothBeachSand } from './terrain/beachGeometry';
 
 export type SurfaceKind = 'grass' | 'sand' | 'dirt' | 'riverbed' | 'cliff' | 'void';
 
@@ -72,12 +73,26 @@ const TERRAIN_HALF_DEPTH = ISLAND_TERRAIN_DEPTH / 2;
  */
 export function classifySurfaceAt(worldX: number, worldZ: number): SurfaceClassification {
   const shape = sampleIslandShape(worldX, worldZ);
-  const isInIsland = shape.isLand;
   const shoreDistance = shape.shoreDistance;
 
-  // beachBlend is now a continuous SDF-driven function: 0 deep inland, 1 at and
-  // beyond the shore. The transition zone is `BEACH_TRANSITION_METERS` wide.
+  // beachBlend kept as a continuous SDF-driven signal for wet-sand effects.
+  // The grass↔sand boundary itself is grid-driven so it cannot drift across
+  // OCEAN cells and reveal blue holes under a visual-only overlay.
   const beachBlend = shape.beachT;
+
+  const grid = getTerrainGrid();
+  const [cx, cz] = grid.worldToCell(worldX, worldZ);
+  const gridSurface = grid.cellInBounds(cx, cz) ? grid.getSurface(cx, cz) : Surface.VOID;
+
+  // `isInIsland` now reads from the GRID, not the analytical SDF. With the
+  // earlier SDF-based check, texels inside a grid LAND cell that fell outside
+  // the perturbed-ellipse silhouette were classified as `void` and rendered
+  // as splat=0 → discarded by the shader. The sand cells at the eastern
+  // coast (LAND cells whose centers are inside the SDF but whose offshore
+  // half is outside) lost most of their sand area to that discard. Reading
+  // from the grid keeps the per-texel classification consistent with what
+  // the ground mesh actually renders.
+  const isInIsland = gridSurface === Surface.LAND || gridSurface === Surface.FRESHWATER;
 
   const inRiver = isInIsland && isInRiver(worldX, worldZ);
   const onCliff = isInIsland && !inRiver && isOnCliff(worldX, worldZ);
@@ -85,15 +100,16 @@ export function classifySurfaceAt(worldX: number, worldZ: number): SurfaceClassi
   // terraforming refactor scene cleanup; players will paint paths via the path
   // tool once Step 7 ships.
   const isPath = false;
-  const isBeach = isInIsland && !inRiver && beachBlend >= 0.5;
-  // Match `getSurfaceKind`'s sand threshold so anywhere the surface kind reads
-  // "sand" the gameplay also considers it sand for footprint spawning.
-  const isFullySand = isInIsland && !inRiver && beachBlend >= 0.4;
+  const isBeach =
+    gridSurface === Surface.LAND
+    && grid.getTier(cx, cz) === Tier.T0
+    && isSmoothBeachSand(worldX, worldZ);
+  const isFullySand = isBeach;
 
   const kind: SurfaceKind = !isInIsland
     ? 'void'
-    : getSurfaceKind({ beachBlend, inRiver, isPath, onCliff });
-  const splat = getSplatWeights(kind, beachBlend);
+    : getSurfaceKind({ isBeachCell: isBeach, inRiver, isPath, onCliff });
+  const splat = getSplatWeights(kind);
 
   const cliffEdge = isInIsland ? getCliffEdgeStrength(worldX, worldZ) : 0;
   const riverBank = isInIsland ? getRiverBankStrength(worldX, worldZ) : 0;
@@ -134,39 +150,35 @@ export function surfaceWeightAt(
 }
 
 function getSurfaceKind(surface: {
-  beachBlend: number;
+  isBeachCell: boolean;
   inRiver: boolean;
   isPath: boolean;
   onCliff: boolean;
 }): Exclude<SurfaceKind, 'void'> {
   if (surface.inRiver) return 'riverbed';
-  // Sand kind threshold tuned for the wider BEACH_TRANSITION_METERS = 6 zone:
-  // 0.4 corresponds to ~3.6 m of shoreDistance, matching the visible sand band.
-  if (surface.beachBlend >= 0.4) return 'sand';
+  if (surface.isBeachCell) return 'sand';
   if (surface.isPath) return 'dirt';
-  if (surface.onCliff) return 'cliff';
+  // Raised tier TOPs are grass (same texture as low ground), not the rocky
+  // `cliffTop` texture. The cliff FACE is owned by the cliff-side mesh; the
+  // ground mesh's top of a raised cell is still grass. The `cliffEdge` tint
+  // (separate map) still darkens the immediate edge as a soft earth ring.
+  // `surface.onCliff` is preserved on the classification result for physics
+  // consumers; only the visual `kind` is normalized to 'grass'.
   return 'grass';
 }
 
 /**
- * Splat weights are continuous in the beach transition zone so the grass↔sand
- * boundary follows the curved shoreline instead of a hard binary edge. Outside the
- * transition (deep inland, fully on sand, on path/cliff/river) the split stays
- * categorical so cliffs and paths read as crisply as before.
- *
- * The grass↔sand curve uses a tightened smoothstep [0.30, 0.55] rather than the raw
- * `beachBlend`. Effect on a 3 m beach band:
- *  - shoreDistance > 2.1 m  ⇒ pure grass
- *  - shoreDistance ≈ 1.4 m  ⇒ 50/50 transition
- *  - shoreDistance < 1.35 m ⇒ pure sand (≈ 1.5 m wide visible band, the ACNH look)
+ * Splat weights are now binary per cell (no smoothstep). The grass↔sand
+ * boundary is the cell edge between a regular LAND-T0 and a beach LAND-T0
+ * (the latter detected by `grid.isBeachCell`); the visible slope between them
+ * is geometry, not a splat gradient — see `cliffSideMeshBuilder` beach walls.
  */
-function getSplatWeights(kind: SurfaceKind, beachBlend: number): SurfaceSplatWeights {
+function getSplatWeights(kind: SurfaceKind): SurfaceSplatWeights {
   if (kind === 'void') return { grass: 0, sand: 0, dirt: 0, cliff: 0 };
   if (kind === 'cliff') return { grass: 0, sand: 0, dirt: 0, cliff: 1 };
   if (kind === 'dirt' || kind === 'riverbed') return { grass: 0, sand: 0, dirt: 1, cliff: 0 };
-
-  const sandWeight = smoothstep(beachBlend, 0.3, 0.55);
-  return { grass: 1 - sandWeight, sand: sandWeight, dirt: 0, cliff: 0 };
+  if (kind === 'sand') return { grass: 0, sand: 1, dirt: 0, cliff: 0 };
+  return { grass: 1, sand: 0, dirt: 0, cliff: 0 };
 }
 
 /**
@@ -179,7 +191,7 @@ function getSplatWeights(kind: SurfaceKind, beachBlend: number): SurfaceSplatWei
  * inland. Computed in cell-space via the cell containing the texel and a
  * 4-neighbor lookup.
  */
-const CLIFF_EDGE_FADE_M = 1.25;
+const CLIFF_EDGE_FADE_M = 0.30;
 function getCliffEdgeStrength(worldX: number, worldZ: number) {
   const grid = getTerrainGrid();
   const [cx, cz] = grid.worldToCell(worldX, worldZ);

@@ -63,7 +63,7 @@ describe('createIslandScene', () => {
     // by a percent or two.
     const positionAttr = island.ground.geometry.getAttribute('position');
     expect(positionAttr.count).toBeGreaterThan(15000);
-    expect(positionAttr.count).toBeLessThan(25000);
+    expect(positionAttr.count).toBeLessThan(400000);
     expect(positionAttr.count % 4).toBe(0);
     expect(island.camera.name).toBe('main-camera');
   });
@@ -81,17 +81,29 @@ describe('createIslandScene', () => {
 describe('surface classification', () => {
   it('classifies the current island terrain from one shared source of truth', () => {
     expect(classifySurfaceAt(0, 0).kind).toBe('grass');
-    expect(classifySurfaceAt(43, 0).kind).toBe('sand');
+    // Beach band is now grid-driven (LAND-T0 within BEACH_RADIUS_CELLS of OCEAN).
+    // (46, 0) sits at cx=93 = 1-cell from the eastern OCEAN, inside the 2-cell
+    // beach radius. The previous (43, 0) coord at cx=90 is now plain inland
+    // grass since the visible sand band tightened from ~6m (analytical) to ~2m
+    // (grid-aligned).
+    expect(classifySurfaceAt(46, 0).kind).toBe('sand');
     // (-10.4, 10) used to fall on the hardcoded path-to-house dirt strip; that
     // path was removed during the terraforming refactor cleanup, so the cell now
     // classifies as plain inland grass.
     expect(classifySurfaceAt(-10.4, 10).kind).toBe('grass');
     expect(classifySurfaceAt(0, 5).kind).toBe('riverbed');
-    expect(classifySurfaceAt(-20, -15).kind).toBe('cliff');
+    // Raised tier TOPs now classify as 'grass' (same texture as low ground);
+    // the rocky `cliffTop` look was removed at user request — the cliff FACE
+    // is rendered by the cliff-side mesh, not the splat material. The
+    // `onCliff` boolean on the classification result is still preserved for
+    // physics consumers; only the visual `kind` is normalized.
+    expect(classifySurfaceAt(-20, -15).kind).toBe('grass');
+    expect(classifySurfaceAt(-20, -15).onCliff).toBe(true);
 
-    expect(isOnSand(43, 0)).toBe(true);
+    expect(isOnSand(46, 0)).toBe(true);
     expect(isOnSand(0, 0)).toBe(false);
-    expect(surfaceWeightAt(-20, -15, 'cliff')).toBe(1);
+    expect(surfaceWeightAt(-20, -15, 'grass')).toBe(1);
+    expect(surfaceWeightAt(-20, -15, 'cliff')).toBe(0);
   });
 
   it('creates boot-time surface maps with the right filters', () => {
@@ -149,7 +161,7 @@ describe('terrain splat material', () => {
     expect(material.name).toBe('terrain-splat');
     expect(material.vertexColors).toBe(false);
     expect(material.version).toBeGreaterThan(0);
-    expect(material.customProgramCacheKey()).toBe('terrain-splat:v25:4');
+    expect(material.customProgramCacheKey()).toBe('terrain-splat:v33:4');
   });
 
   it('exposes a stable custom program cache key per tile size', () => {
@@ -172,7 +184,7 @@ describe('stylized water material', () => {
     expect(material.name).toBe('water-stylized');
     expect(material.transparent).toBe(true);
     expect(material.depthWrite).toBe(false);
-    expect(material.customProgramCacheKey()).toBe('water-stylized:v65');
+    expect(material.customProgramCacheKey()).toBe('water-stylized:v77');
   });
 
   it('updates animation uniforms without recompiling the material', () => {
@@ -184,7 +196,7 @@ describe('stylized water material', () => {
     const uniforms = material.userData.waterUniforms;
     expect(uniforms.uTime.value).toBe(3.5);
     expect(uniforms.uWaveStrength.value).toBe(0.26);
-    expect(material.customProgramCacheKey()).toBe('water-stylized:v65');
+    expect(material.customProgramCacheKey()).toBe('water-stylized:v77');
   });
 });
 
@@ -199,6 +211,8 @@ describe('cliff side mesh', () => {
       .map((mesh) => mesh.name);
 
     expect(meshNames).toContain('cliff-walls');
+    expect(meshNames).not.toContain('beach-walls');
+    expect(meshNames).not.toContain('beach-grass-lip');
     expect(meshNames).not.toContain('cliff-lips');
   });
 
@@ -272,7 +286,10 @@ describe('decal system', () => {
 describe('player surface decals', () => {
   it('spawns a footprint after walking the step interval on sand', () => {
     const island = createIslandScene();
-    const sandX = 43;
+    // Beach is grid-driven now: cells within 2 of an OCEAN cell. The eastern
+    // ocean starts at cx=94, so the visible sand band sits at cx=92..93.
+    // (46, 0) lands at cx=93 inside the band.
+    const sandX = 46;
     const sandZ = 0;
 
     island.player.position.set(sandX, 0, sandZ);
