@@ -32,11 +32,16 @@ export function createWaterfallStylizedMaterial(): THREE.MeshStandardMaterial {
     emissive: 0xffffff,
     metalness: 0,
     opacity: 1.0,
+    // PolygonOffset stronger than the cliff wall (-4, -4) so the cascade
+    // wins the depth test against its rock backing — without this the
+    // cliff wall behind the cascade re-emerges (we removed the FW-upper
+    // skip in cliffSideMeshBuilder so the rock backing exists, otherwise
+    // the user sees nothing behind the cascade).
+    polygonOffset: true,
+    polygonOffsetFactor: -10,
+    polygonOffsetUnits: -10,
     roughness: 1.0,
     // FrontSide so the cascade only renders on its outward-facing face.
-    // DoubleSide made the back of the cascade quad visible from inside
-    // the pond looking out, which read as the cascade rendering on all
-    // 4 walls of the pond instead of just the drop side.
     side: THREE.FrontSide,
     transparent: false,
   });
@@ -174,14 +179,25 @@ droplet = smoothstep(0.94, 1.0, droplet) * 0.6;
 float topDistance = vDropMeters - dropV;
 float crestFoam = smoothstep(0.14, 0.0, topDistance);
 
-// Pool froth — bottom 16 cm BRIGHTENS instead of darkens. Falling water
-// hitting a pool throws white spray, not a shadow. Strongest at dropV=0,
-// fades upward.
-float poolFroth = smoothstep(0.16, 0.0, dropV);
+// Pool froth — bottom 30 cm has a turbulent bright-white splash pattern.
+// Two animated foam noise layers churning at different speeds simulate the
+// "splash" where the cascade hits the pool. The poolFroth envelope gives
+// it a soft fade upward so the splash blends into the regular cascade
+// streaks rather than cutting hard at 30 cm.
+float poolFroth = smoothstep(0.30, 0.0, dropV);
+vec2 froth1 = vec2(spanW * 6.0, dropV * 8.0 + uTime * 1.4);
+vec2 froth2 = vec2(spanW * 14.0 - 3.7, dropV * 3.0 - uTime * 2.1);
+float foamPulse1 = wfHash(floor(froth1));
+float foamPulse2 = wfHash(floor(froth2));
+float foamPulse = max(
+  smoothstep(0.65, 1.0, foamPulse1),
+  smoothstep(0.72, 1.0, foamPulse2)
+);
+float splash = poolFroth * (0.50 + foamPulse * 0.50);
 
 vec3 streakColor = vec3(0.97, 0.99, 1.00);
 vec3 waterfallColor = mix(baseColor, streakColor, streakAmount);
 waterfallColor = mix(waterfallColor, streakColor, droplet);
 waterfallColor = mix(waterfallColor, vec3(1.0), crestFoam * 0.58);
-waterfallColor = mix(waterfallColor, vec3(0.96, 0.98, 1.00), poolFroth * 0.52);
+waterfallColor = mix(waterfallColor, vec3(1.0), splash * 0.78);
 `;

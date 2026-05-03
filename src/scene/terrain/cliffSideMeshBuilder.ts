@@ -125,37 +125,46 @@ const CLIFF_FRAGMENT_BODY = /* glsl */`
     float stratum = abs(fract(stratumY * 3.3) - 0.5);
     float stratumDark = smoothstep(0.45, 0.50, stratum) * 0.18;
 
-    // 3 cracks, each living in a random vertical SEGMENT of the wall.
-    // For each crack k:
-    //   1. pick a random X position around the cell-aligned grid step,
-    //   2. pick a vertical band [yLow, yHigh] in world-Y where the crack
-    //      lives (random center, random length 0.30..0.80 m),
-    //   3. apply a 1D smoothstep falloff in Y so the crack fades in and
-    //      out instead of running from cliff top to foot.
-    // Result: short, irregular dark slits that read as erosion, not the
-    // full-height bands that previously read as planks.
+    // Horizontal cracks instead of vertical fissures. ACNH cliffs read
+    // as "imperfect cracked lines, not straight, varied thickness" — the
+    // user's reference. For each crack k:
+    //   1. pick a random Y position (a horizontal band lives at this Y),
+    //   2. pick a horizontal X RANGE [xLeft, xRight] where the crack lives
+    //      (varied length 25-90 cm, random per crack),
+    //   3. add a Y-jitter via noise so the crack curves along its length
+    //      instead of running ruler-straight,
+    //   4. give it a varied half-thickness (1-4 cm) that breathes along
+    //      its length, again via noise.
+    // Result: short curved dark slits at varying heights, of varied
+    // length and thickness — looks like sedimentary cracks, not planks.
     float fissure = 0.0;
-    for (int k = 0; k < 3; k++) {
+    for (int k = 0; k < 4; k++) {
       float fk = float(k);
-      float seedX  = cliffNoise(vec2(fk * 7.31, fk * 11.7)) * 9.0;
-      float fx     = floor(along * 0.55 + seedX) / 0.55;
-      float xOff   = (cliffNoise(vec2(floor(along * 0.55 + seedX), fk * 3.7)) - 0.5) * 1.4;
-      float center = fx + xOff;
-      float widthSeed = cliffNoise(vec2(floor(along * 0.55 + seedX) + 13.0, fk * 5.1));
-      float halfWidth = 0.020 + widthSeed * 0.050;
+      float seedY = cliffNoise(vec2(fk * 13.7, fk * 21.3));
+      float fy    = floor(worldY * 0.85 + seedY * 7.0) / 0.85;
+      float yOff  = (cliffNoise(vec2(floor(worldY * 0.85 + seedY * 7.0), fk * 5.3)) - 0.5) * 0.45;
+      float yCenter = fy + yOff;
 
-      // Vertical segment for THIS crack on THIS wall column.
-      float ySeed   = cliffNoise(vec2(floor(along * 0.55 + seedX) + 41.0, fk * 9.3));
-      float yCenter = ySeed * 4.0 - 0.4 + worldY - mod(worldY, 1.4);
-      float yHalf   = 0.18 + ySeed * 0.22;
+      // Curve the crack: yCenter wobbles by noise of along, ~6 cm peak.
+      float crackJitter = (cliffNoise(vec2(along * 0.9 + fk * 11.0, fy * 0.4)) - 0.5) * 0.06;
+      float yEffective = yCenter + crackJitter;
 
-      float dx       = abs(along - center);
-      float dy       = abs(worldY - yCenter);
-      float coreX    = smoothstep(halfWidth, 0.0, dx);
-      float coreY    = smoothstep(yHalf, yHalf * 0.5, dy);
-      float core     = coreX * coreY;
-      float topFade  = 1.0 - smoothstep(0.86, 1.0, height01);
-      fissure = max(fissure, core * topFade * (0.22 + widthSeed * 0.18));
+      // Random horizontal extent.
+      float xSeed = cliffNoise(vec2(floor(worldY * 0.85 + seedY * 7.0) + 7.0, fk * 9.1));
+      float xCenter = xSeed * 6.0 - 3.0 + along - mod(along, 1.0);
+      float xHalf   = 0.13 + xSeed * 0.32;
+
+      // Thickness varies along the length.
+      float thickSeed = cliffNoise(vec2(along * 1.3 + fk * 4.0, yCenter * 0.6));
+      float halfThickness = 0.010 + thickSeed * 0.030;
+
+      float dY = abs(worldY - yEffective);
+      float dX = abs(along - xCenter);
+      float coreY = smoothstep(halfThickness, halfThickness * 0.4, dY);
+      float coreX = smoothstep(xHalf, xHalf * 0.6, dX);
+      float core  = coreY * coreX;
+      float topFade = 1.0 - smoothstep(0.86, 1.0, height01);
+      fissure = max(fissure, core * topFade * (0.30 + thickSeed * 0.30));
     }
 
     float bottomShadow = 1.0 - smoothstep(0.08, 0.55, height01);
@@ -220,14 +229,15 @@ export function buildCliffSideMesh(
     // poke through the ocean foam ribbon.
     if (upperCell.surface === Surface.OCEAN) return;
 
-    // Skip raised-FRESHWATER edges: this is a cascade. waterfallMeshBuilder
-    // emits a vertical sheet for the same edge with the dedicated waterfall
-    // shader (white streaks + crest foam + pool mist). Adding a cliff wall
-    // here as well drops a brown stone band in front of the cascade — the
-    // wall's negative polygonOffset wins the depth test and masks the
-    // waterfall entirely, which read as "I dug water on top of a cliff and
-    // there is no cascade".
-    if (upperCell.surface === Surface.FRESHWATER) return;
+    // For raised-FRESHWATER edges (cascades) we still emit the cliff wall
+    // as a ROCK BACKING behind the cascade. Without it the user reads the
+    // cascade as floating in midair — they reported "c'est vide derriere
+    // la cascade". The waterfall material has stronger polygonOffset than
+    // the cliff so the cascade still wins the depth test on its own
+    // pixels, but at the cascade's edges (where streaks are translucent
+    // / where the cascade quad ends) the rock behind shows through and
+    // gives the falling water a place to fall FROM.
+    void Surface.FRESHWATER;
 
     const isBeachToGrassRamp =
       grid.isBeachCell(lowerCx, lowerCz)
