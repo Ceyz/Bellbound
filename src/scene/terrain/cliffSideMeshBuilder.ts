@@ -3,6 +3,7 @@ import type { SurfaceTextureSet } from '../proceduralTextures';
 import {
   Surface,
   Tier,
+  tierHeight,
   type TerrainGrid,
 } from './TerrainGrid';
 
@@ -126,35 +127,27 @@ const CLIFF_FRAGMENT_BODY = /* glsl */`
     float stratumDark = smoothstep(0.45, 0.50, stratum) * 0.18;
 
     // Vertical cracks (matching ACNH reference) but explicitly IMPERFECT:
-    //   1. each crack picks a random X position deterministic per cell-X,
-    //   2. picks a vertical EXTENT [yLow, yHigh] of varied length (25-90 cm)
-    //      so the crack does not run from cliff foot to crest,
-    //   3. wobbles its X position by noise of worldY (~6 cm peak) so the
-    //      crack curves along its length instead of running ruler-straight,
-    //   4. carries a per-fragment thickness that breathes (1-4 cm) along Y.
-    // Result: short curved dark slits at varying X positions, of varied
-    // length and thickness — "des traits imparfaits qui font pas toute la
-    // ligne, plus ou moins gros, pas droits", per the user's spec.
+    // SHORT (10-25 cm), varied thickness (0.5-2 cm), curved by noise of
+    // worldY. Cracks were previously up to 90 cm tall — that read as wood
+    // plank seams. The new lengths put 4-6 short cracks scattered across
+    // a 1.4 m wall instead of 1-2 long runners.
     float fissure = 0.0;
-    for (int k = 0; k < 4; k++) {
+    for (int k = 0; k < 3; k++) {
       float fk = float(k);
       float seedX = cliffNoise(vec2(fk * 13.7, fk * 21.3));
       float fx    = floor(along * 0.85 + seedX * 7.0) / 0.85;
-      float xOff  = (cliffNoise(vec2(floor(along * 0.85 + seedX * 7.0), fk * 5.3)) - 0.5) * 0.45;
+      float xOff  = (cliffNoise(vec2(floor(along * 0.85 + seedX * 7.0), fk * 5.3)) - 0.5) * 0.55;
       float xCenter = fx + xOff;
 
-      // Curve the crack: xCenter wobbles by noise of worldY, ~6 cm peak.
-      float crackJitter = (cliffNoise(vec2(worldY * 0.9 + fk * 11.0, fx * 0.4)) - 0.5) * 0.06;
+      float crackJitter = (cliffNoise(vec2(worldY * 1.3 + fk * 11.0, fx * 0.4)) - 0.5) * 0.05;
       float xEffective = xCenter + crackJitter;
 
-      // Random vertical extent for this crack.
       float ySeed   = cliffNoise(vec2(floor(along * 0.85 + seedX * 7.0) + 7.0, fk * 9.1));
-      float yCenter = ySeed * 4.0 - 1.5 + worldY - mod(worldY, 1.4);
-      float yHalf   = 0.13 + ySeed * 0.32;
+      float yCenter = ySeed * 3.5 - 1.0 + worldY - mod(worldY, 1.4);
+      float yHalf   = 0.05 + ySeed * 0.10;
 
-      // Thickness varies along the length.
-      float thickSeed = cliffNoise(vec2(worldY * 1.3 + fk * 4.0, xCenter * 0.6));
-      float halfThickness = 0.010 + thickSeed * 0.030;
+      float thickSeed = cliffNoise(vec2(worldY * 1.7 + fk * 4.0, xCenter * 0.6));
+      float halfThickness = 0.005 + thickSeed * 0.015;
 
       float dX = abs(along - xEffective);
       float dY = abs(worldY - yCenter);
@@ -162,7 +155,7 @@ const CLIFF_FRAGMENT_BODY = /* glsl */`
       float coreY = smoothstep(yHalf, yHalf * 0.6, dY);
       float core  = coreX * coreY;
       float topFade = 1.0 - smoothstep(0.86, 1.0, height01);
-      fissure = max(fissure, core * topFade * (0.30 + thickSeed * 0.30));
+      fissure = max(fissure, core * topFade * (0.20 + thickSeed * 0.20));
     }
 
     float bottomShadow = 1.0 - smoothstep(0.08, 0.55, height01);
@@ -274,8 +267,19 @@ export function buildCliffSideMesh(
     // Real cliff: LAND-tier-N → LAND-tier-M with N < M. slope_offset is 0 so
     // the wall is purely vertical — its two perpendicular ends collapse to
     // a line and need no closure triangles.
+    //
+    // SPECIAL CASE: when upper is FRESHWATER (cascade), use the FW cell's
+    // GRASS TOP (= tier top, not bed) as the wall's top. cellHeight returns
+    // the bed Y (1.4 - 0.5 = 0.9 for T1), and the raw `drop` is computed
+    // from that — leaves a brown gap at the top of the cascade where the
+    // backing wall stops 30 cm below the visible grass crest. Promoting
+    // the wall top to tierHeight covers the cascade's full visible height.
+    let wallDrop = drop;
+    if (upperCell.surface === Surface.FRESHWATER) {
+      wallDrop = tierHeight(upperCell.tier) - grid.cellHeight(lowerCx, lowerCz);
+    }
     const geom = buildSlopedWallGeometry(
-      grid, lowerCx, lowerCz, dx, dz, drop, SLOPE_OFFSET_CLIFF,
+      grid, lowerCx, lowerCz, dx, dz, wallDrop, SLOPE_OFFSET_CLIFF,
     );
     cliffGeometries.push(geom);
   });
