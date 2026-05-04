@@ -85,20 +85,20 @@ float cliffNoise(vec2 p) {
 }
 `;
 
-// ACNH-style cliff fragment, randomised:
-//   - color varies via 3 octaves of FBM noise with isotropic (square)
-//     X/Y frequencies so tall narrow walls do not stretch the noise into
-//     wood-grain stripes (the user's "ça devient du bois" complaint when
-//     a deep pit exposes a tall cliff face)
-//   - cracks are SEGMENTS, not full-height streaks: each crack picks a
-//     vertical band of the wall and only darkens within it, then fades
-//     out — no single crack reaches from grass top to cliff foot
-//   - grass crest top edge jittered by noise so the lip silhouette is wavy
-//   - strong AO foot shadow in the bottom 55% kept for grounding
-//
-// Everything keys off `along` (world-X or world-Z depending on wall normal)
-// and `vCliffWorldPos.y` so neighbouring wall segments meet seamlessly with
-// no visible cell boundary.
+// ACNH-style cliff fragment — refined for the in-game look:
+//   - WARM EARTH palette mixed by FBM noise only (no horizontal
+//     stripes — ACNH cliffs read as organic mottled earth, never with
+//     ruler-straight bands at sub-tier positions)
+//   - GRADIENT keyed off `vCliffWorldPos.y` referenced to a smooth
+//     domain-warped Y, so neighbouring wall segments at different
+//     tier-stack depths blend continuously instead of restarting at
+//     each tier (the user's "3 cubes empilés" complaint)
+//   - VERTICAL IMPERFECT CRACKS that break into segments, curve
+//     sideways, vary in thickness — "craquelure" feel
+//   - Crack X positions hash off WORLD-Y bands (every 1.5 m), so the
+//     cracks shift sideways at multi-tier boundaries — visually the
+//     fracture pattern continues across tier seams without a hard
+//     repeat
 const CLIFF_FRAGMENT_BODY = /* glsl */`
 #ifdef USE_MAP
   {
@@ -107,62 +107,80 @@ const CLIFF_FRAGMENT_BODY = /* glsl */`
     float worldY = vCliffWorldPos.y;
     float height01 = clamp(vMapUv.y, 0.0, 1.0);
 
-    // 3-octave FBM color variation, ISOTROPIC (matched X/Y frequencies)
-    // so the base noise reads as random rocky blobs instead of biasing
-    // toward either horizontal bands (the previous Y-biased "trait
-    // horizontal" complaint) or vertical stripes (wood look). The
-    // VISIBLE pattern is the vertical cracks below — the noise just
-    // gives the wall a non-uniform background.
-    float n1 = cliffNoise(vec2(along * 1.8, worldY * 1.8));
+    // Multi-octave FBM color variation. ISOTROPIC (matched X/Y freqs)
+    // and keyed off ABSOLUTE worldY (not yInTier) so multi-tier cliffs
+    // get continuous mottling across tier seams. Adding a domain-warp
+    // sample (n0) into n1's coords softens directional bias further.
+    float n0 = cliffNoise(vec2(along * 0.6, worldY * 0.6));
+    float n1 = cliffNoise(vec2(along * 1.4 + n0 * 0.6,  worldY * 1.4 + n0 * 0.6));
     float n2 = cliffNoise(vec2(along * 3.5 + 17.3, worldY * 3.5 - 4.2));
-    float n3 = cliffNoise(vec2(along * 6.5 - 9.1, worldY * 6.5 + 2.8));
-    float colorVar = clamp(n1 * 0.55 + n2 * 0.30 + n3 * 0.15, 0.0, 1.0);
-    float stratumDark = 0.0;
+    float n3 = cliffNoise(vec2(along * 7.0 - 9.1,  worldY * 7.0 + 2.8));
+    float colorVar = n1 * 0.50 + n2 * 0.30 + n3 * 0.20;
 
-    // Vertical cracks, IMPERFECT and VISIBLE. Per ACNH reference: imperfect
-    // lines, varying thickness, curved, "craquelé" look. 5 cracks per wall,
-    // each 16-50 cm tall (full length), 1-4 cm thick, 30-55 % darkening so
-    // they actually read as cracks against the brown rock instead of being
-    // diluted into invisibility.
+    // Earth palette — two stops only, blended by noise. ACNH cliff
+    // texture is mottled, NOT explicitly striated. The noise gives all
+    // the visible variation; no explicit horizontal bands.
+    vec3 lightEarth = vec3(0.84, 0.66, 0.46);
+    vec3 darkEarth  = vec3(0.48, 0.30, 0.18);
+    vec3 cliffColor = mix(darkEarth, lightEarth, colorVar);
+
+    // SOFT vertical gradient — slightly lighter near the crest, slightly
+    // darker near the foot. Uses height01 (per-quad) so a tall single
+    // multi-tier quad gets ONE continuous gradient. No mod() reset,
+    // no per-tier "cube" silhouette.
+    cliffColor *= mix(0.85, 1.08, height01);
+
+    // Vertical IMPERFECT CRACKS — 6 cracks, CURVED and BROKEN INTO
+    // SEGMENTS. Crack X positions are seeded by floor(worldY / 1.5),
+    // so at every 1.5 m of vertical world-space the crack pattern
+    // shifts sideways — the fractures appear to continue but jog
+    // organically through tier boundaries instead of resetting
+    // identically per tier.
     float fissure = 0.0;
-    for (int k = 0; k < 5; k++) {
+    float yBucket = floor(worldY / 1.5);
+    for (int k = 0; k < 6; k++) {
       float fk = float(k);
-      float seedX = cliffNoise(vec2(fk * 13.7, fk * 21.3));
-      float fx    = floor(along * 0.85 + seedX * 7.0) / 0.85;
-      float xOff  = (cliffNoise(vec2(floor(along * 0.85 + seedX * 7.0), fk * 5.3)) - 0.5) * 0.55;
-      float xCenter = fx + xOff;
+      float seedX = cliffNoise(vec2(fk * 13.7 + yBucket * 3.1, fk * 21.3));
+      float xCenter = fk * 0.83 + seedX * 0.30 + floor(along * 0.20) * 5.0;
 
-      // Curve: xCenter wobbles by noise of worldY, ~8 cm peak.
-      float crackJitter = (cliffNoise(vec2(worldY * 1.3 + fk * 11.0, fx * 0.4)) - 0.5) * 0.08;
-      float xEffective = xCenter + crackJitter;
+      // Curve: x wobbles by ~12 cm via worldY-noise.
+      float crackCurve = (cliffNoise(vec2(worldY * 1.1 + fk * 11.0, fk * 0.4)) - 0.5) * 0.12;
+      float xEffective = xCenter + crackCurve;
 
-      float ySeed   = cliffNoise(vec2(floor(along * 0.85 + seedX * 7.0) + 7.0, fk * 9.1));
-      float yCenter = ySeed * 3.5 - 1.0 + worldY - mod(worldY, 1.4);
-      float yHalf   = 0.08 + ySeed * 0.17;     // 16-50 cm full length
+      // Vertical extent: 60-140 cm tall, randomly placed inside the
+      // 1.5 m vertical bucket so adjacent buckets' cracks overlap and
+      // the fracture pattern reads as "continuous but jogged".
+      float ySeed = cliffNoise(vec2(fk * 9.1, yBucket + fk));
+      float yCenter = ySeed * 0.6 + yBucket * 1.5 + 0.75;
+      float yHalf   = 0.30 + ySeed * 0.40;
 
+      // Thickness: 0.5-2 cm.
       float thickSeed = cliffNoise(vec2(worldY * 1.7 + fk * 4.0, xCenter * 0.6));
-      float halfThickness = 0.005 + thickSeed * 0.020;  // 1-4 cm
+      float halfThickness = 0.0050 + thickSeed * 0.0150;
 
       float dX = abs(along - xEffective);
       float dY = abs(worldY - yCenter);
-      float coreX = smoothstep(halfThickness, halfThickness * 0.4, dX);
-      float coreY = smoothstep(yHalf, yHalf * 0.6, dY);
+      float coreX = smoothstep(halfThickness, halfThickness * 0.30, dX);
+      float coreY = smoothstep(yHalf, yHalf * 0.70, dY);
       float core  = coreX * coreY;
-      float topFade = 1.0 - smoothstep(0.86, 1.0, height01);
-      fissure = max(fissure, core * topFade * (0.30 + thickSeed * 0.25));
+
+      // BREAK the crack into segments along Y so it reads as imperfect
+      // craquelure — no single continuous floor-to-ceiling line.
+      float yBreak = cliffNoise(vec2(fk * 7.7, worldY * 4.2));
+      float breakMask = smoothstep(0.25, 0.55, yBreak);
+
+      float topFade = 1.0 - smoothstep(0.92, 1.0, height01);
+      fissure = max(fissure, core * breakMask * topFade * (0.55 + thickSeed * 0.15));
     }
 
-    float bottomShadow = 1.0 - smoothstep(0.08, 0.55, height01);
-    float topLight     = smoothstep(0.62, 1.0, height01);
+    cliffColor *= max(0.0, 1.0 - fissure);
 
-    vec3 darkEarth = vec3(0.34, 0.19, 0.11);
-    vec3 warmEarth = vec3(0.74, 0.46, 0.30);
-    vec3 cliffColor = mix(darkEarth, warmEarth, 0.42 + colorVar * 0.46);
-    cliffColor *= max(0.0, 1.0 - bottomShadow * 0.42 - fissure - stratumDark);
-    cliffColor += vec3(0.060, 0.040, 0.022) * topLight;
+    // Subtle warm tint near the top (above height01 0.7), kept gentle so
+    // multi-tier walls don't show seams from per-quad gradient resets.
+    float topLight = smoothstep(0.70, 1.0, height01);
+    cliffColor += vec3(0.045, 0.030, 0.020) * topLight;
 
-    // Grass crest blend with a noisy top boundary so the lip silhouette is
-    // not a perfectly straight line.
+    // Grass crest blend with a noisy top boundary.
     vec2 grassUv    = vCliffWorldPos.xz / uCliffGrassTileSize;
     vec3 grassColor = texture2D(uCliffGrassTex, grassUv).rgb;
     float crestJitter = (cliffNoise(vec2(along * 1.7, 0.0)) - 0.5) * 0.04;
@@ -236,9 +254,35 @@ export function buildCliffSideMesh(
     void isBeachToGrassRamp;
 
     if (lowerCell.surface === Surface.FRESHWATER) {
-      // Bank from upper LAND grass top down to the FW bed (full 50 cm
-      // for T1). The 30 cm of bank visible above the water surface is
-      // intentional — gives the river the depth-feel the user asked for.
+      // Cascade-into-pond (upper FW → lower FW): emit a CLIFF wall, not a
+      // river-bank wall. The cascade quad covers the front face but at its
+      // top edge the user sees the backing — a dirt-bank material there
+      // reads as a different texture next to the surrounding cliff walls.
+      // Wall extended to grass top so the backing covers the cascade's
+      // full visible height.
+      if (upperCell.surface === Surface.FRESHWATER) {
+        const wallDrop = tierHeight(upperCell.tier) - grid.cellHeight(lowerCx, lowerCz);
+        const geom = buildSlopedWallGeometry(
+          grid, lowerCx, lowerCz, dx, dz, wallDrop, SLOPE_OFFSET_CLIFF,
+        );
+        cliffGeometries.push(geom);
+        // No bevel — upper FW has no grass to roll over.
+        return;
+      }
+
+      // LAND → FW with a TALL drop (>= 1 m): the LAND cell sits a full
+      // tier above a lower pond — visually a cascade-flanking cliff face,
+      // not a gentle river bank. Use CLIFF material (procedural rock,
+      // crack/blotch look matching the rest of the cliffs).
+      if (drop >= 1.0) {
+        const geom = buildSlopedWallGeometry(
+          grid, lowerCx, lowerCz, dx, dz, drop, SLOPE_OFFSET_CLIFF,
+        );
+        cliffGeometries.push(geom);
+        return;
+      }
+
+      // Normal SHORT river bank (upper LAND → lower FW, drop < 1 m).
       const main = buildSlopedWallGeometry(
         grid, lowerCx, lowerCz, dx, dz, drop, SLOPE_OFFSET_RIVER_BANK,
       );
@@ -436,7 +480,7 @@ function createCliffWallMaterial(textures: SurfaceTextureSet): THREE.MeshStandar
       .replace('#include <map_fragment>', CLIFF_FRAGMENT_BODY);
   };
 
-  material.customProgramCacheKey = () => 'cliff-wall:v3-strata-grass-crest';
+  material.customProgramCacheKey = () => 'cliff-wall:v7-mottled-no-bands';
   material.needsUpdate = true;
   return material;
 }

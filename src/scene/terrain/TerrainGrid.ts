@@ -776,14 +776,26 @@ export function validateTierMass(
     return o ? o.tier : grid.getTier(cx, cz);
   };
 
+  // A "plateau member" is a LAND or FRESHWATER cell at tier ≥ t. FW
+  // cells count because a pond carved into a plateau doesn't actually
+  // shrink the plateau silhouette — the cliff perimeter still wraps
+  // around the FW cells. Without this, digging a single cell into a
+  // 3×3 plateau immediately fragments the LAND-only mass and the rule
+  // refuses every further dig (the user's "y'a que la case à gauche
+  // que j'ai pu creuser" complaint).
+  const isPlateauMember = (cx: number, cz: number, tier: number): boolean => {
+    const surf = readSurface(cx, cz);
+    if (surf !== Surface.LAND && surf !== Surface.FRESHWATER) return false;
+    return readTier(cx, cz) >= tier;
+  };
+
   for (let t = 1; t <= 3; t += 1) {
     const visited = new Uint8Array(W * D);
     for (let seedZ = 0; seedZ < D; seedZ += 1) {
       for (let seedX = 0; seedX < W; seedX += 1) {
         const seedIdx = seedZ * W + seedX;
         if (visited[seedIdx]) continue;
-        if (readSurface(seedX, seedZ) !== Surface.LAND) continue;
-        if (readTier(seedX, seedZ) < t) continue;
+        if (!isPlateauMember(seedX, seedZ, t)) continue;
 
         // Flood-fill the component containing (seedX, seedZ).
         const cells: Array<[number, number]> = [];
@@ -798,8 +810,7 @@ export function validateTierMass(
             if (nx < 0 || nx >= W || nz < 0 || nz >= D) continue;
             const nIdx = nz * W + nx;
             if (visited[nIdx]) continue;
-            if (readSurface(nx, nz) !== Surface.LAND) continue;
-            if (readTier(nx, nz) < t) continue;
+            if (!isPlateauMember(nx, nz, t)) continue;
             visited[nIdx] = 1;
             stack.push([nx, nz]);
           }

@@ -776,10 +776,14 @@ describe('TerrainGrid — wouldEditMaintainTierMass', () => {
     expect(wouldEditMaintainTierMass(grid, 17, 20, Surface.LAND, Tier.T0)).toBe(false);
   });
 
-  it('a dig that turns a critical T1 cell to FRESHWATER is refused (FW counts as not-LAND)', () => {
-    // 2×2 T1 plateau. Digging any cell to FW removes it from the LAND mask
-    // → 3 LAND cells left, no 2×2.
+  it('a dig that turns a critical T1 cell to FRESHWATER is allowed (FW counts as plateau member)', () => {
+    // 2×2 T1 plateau. Digging any cell to FW LEAVES that cell as a plateau
+    // member (FW@T1 is part of the same tier-1 mass — it's a pond carved
+    // INTO the plateau, not removed from it). The 2×2 block still exists,
+    // just one corner is water. Without this lenient rule, users couldn't
+    // dig ponds on small plateaus at all (the user's "y'a que la case à
+    // gauche que j'ai pu creuser" complaint).
     const grid = landGrid(rect(10, 10, 2, 2, Tier.T1));
-    expect(wouldEditMaintainTierMass(grid, 10, 10, Surface.FRESHWATER, Tier.T1)).toBe(false);
+    expect(wouldEditMaintainTierMass(grid, 10, 10, Surface.FRESHWATER, Tier.T1)).toBe(true);
   });
 });

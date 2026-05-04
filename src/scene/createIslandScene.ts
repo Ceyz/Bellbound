@@ -19,11 +19,23 @@ import {
   createFreshwaterStylizedMaterial,
   updateFreshwaterStylizedMaterial,
 } from './terrain/freshwaterStylizedMaterial';
-import { buildWaterfallMesh } from './terrain/waterfallMeshBuilder';
+import {
+  buildWaterfallMesh,
+  buildWaterfallSplashMesh,
+  buildWaterfallMistMesh,
+} from './terrain/waterfallMeshBuilder';
 import {
   createWaterfallStylizedMaterial,
   updateWaterfallStylizedMaterial,
 } from './terrain/waterfallStylizedMaterial';
+import {
+  createWaterfallSplashMaterial,
+  updateWaterfallSplashMaterial,
+} from './terrain/waterfallSplashMaterial';
+import {
+  createWaterfallMistMaterial,
+  updateWaterfallMistMaterial,
+} from './terrain/waterfallMistMaterial';
 import type { SurfaceTextureSet } from './proceduralTextures';
 import { loadSurfaceTextures } from './surfaceTextureLoader';
 import { createTerrainSplatMaterial, updateTerrainSplatMaterial } from './terrainSplatMaterial';
@@ -46,6 +58,8 @@ export interface IslandScene {
   rollingObjects: RollingObject[];
   freshwater: THREE.Mesh<THREE.BufferGeometry, THREE.MeshStandardMaterial>;
   waterfalls: THREE.Mesh<THREE.BufferGeometry, THREE.MeshStandardMaterial>;
+  waterfallSplashes: THREE.Mesh<THREE.BufferGeometry, THREE.MeshStandardMaterial>;
+  waterfallMist: THREE.Mesh<THREE.BufferGeometry, THREE.MeshStandardMaterial>;
   scene: THREE.Scene;
   sky: SkySystem;
   sun: THREE.DirectionalLight;
@@ -150,6 +164,23 @@ export function createIslandScene(): IslandScene {
   waterfalls.receiveShadow = false;
   scene.add(waterfalls);
 
+  // Horizontal splash discs at every cascade-into-pond foot. Animated
+  // radial ripples + bright impact centre on the receiving water plane,
+  // so the cascade reads as a real impact not a static stripe.
+  const waterfallSplashMaterial = createWaterfallSplashMaterial();
+  const waterfallSplashes = buildWaterfallSplashMesh(getTerrainGrid(), waterfallSplashMaterial);
+  waterfallSplashes.receiveShadow = false;
+  scene.add(waterfallSplashes);
+
+  // Vertical mist plumes at each cascade foot — soft white haze rising
+  // ~55 cm above the water surface, fading to transparent at the top.
+  // Sells the splash's vertical energy (water blasted upward) — without
+  // it the cascade impact reads as a flat puddle.
+  const waterfallMistMaterial = createWaterfallMistMaterial();
+  const waterfallMist = buildWaterfallMistMesh(getTerrainGrid(), waterfallMistMaterial);
+  waterfallMist.receiveShadow = false;
+  scene.add(waterfallMist);
+
   const cliffSideWalls = buildCliffSideMesh(getTerrainGrid(), surfaceTextures);
   scene.add(cliffSideWalls);
 
@@ -176,10 +207,14 @@ export function createIslandScene(): IslandScene {
   applyRollingShaderTo(water.material);
   applyRollingShaderTo(freshwater.material);
   applyRollingShaderTo(waterfalls.material);
+  applyRollingShaderTo(waterfallSplashes.material);
+  applyRollingShaderTo(waterfallMist.material);
   disableFrustumCullingForRolling(ground);
   disableFrustumCullingForRolling(water);
   disableFrustumCullingForRolling(freshwater);
   disableFrustumCullingForRolling(waterfalls);
+  disableFrustumCullingForRolling(waterfallSplashes);
+  disableFrustumCullingForRolling(waterfallMist);
 
   const cliffMaterials = new Set<THREE.Material>();
   cliffSideWalls.traverse((child) => {
@@ -251,6 +286,8 @@ export function createIslandScene(): IslandScene {
     ground,
     obstacles,
     waterfalls,
+    waterfallSplashes,
+    waterfallMist,
     player,
     playerBody,
     rollingObjects,
@@ -329,6 +366,18 @@ export function rebuildTerrain(island: IslandScene): void {
   const tmpWf = buildWaterfallMesh(grid, island.waterfalls.material);
   island.waterfalls.geometry = tmpWf.geometry;
   oldWfGeo.dispose();
+
+  // Splash discs follow the same iteration — one per cascade-into-pond foot.
+  const oldSplashGeo = island.waterfallSplashes.geometry;
+  const tmpSplash = buildWaterfallSplashMesh(grid, island.waterfallSplashes.material);
+  island.waterfallSplashes.geometry = tmpSplash.geometry;
+  oldSplashGeo.dispose();
+
+  // Mist plumes follow the same iteration too.
+  const oldMistGeo = island.waterfallMist.geometry;
+  const tmpMist = buildWaterfallMistMesh(grid, island.waterfallMist.material);
+  island.waterfallMist.geometry = tmpMist.geometry;
+  oldMistGeo.dispose();
 
   // 5. Cliff side mesh: dispose all children + materials, then rebuild.
   for (const child of [...island.cliffSideWalls.children]) {
@@ -415,11 +464,16 @@ export function tickIslandScene(
   island.playerBody.position.y = PLAYER_BODY_BASE_Y + Math.sin(elapsed * bobSpeed) * bobHeight;
   island.water.position.y = -0.40 + Math.sin(elapsed * 1.8) * params.waveHeight * 0.08;
   updateWaterStylizedMaterial(island.water.material, elapsed, params.waveHeight);
-  updateFreshwaterStylizedMaterial(island.freshwater.material, elapsed);
-  updateWaterfallStylizedMaterial(island.waterfalls.material, elapsed);
-  updateTerrainSplatMaterial(island.ground.material, elapsed);
-
+  // Compute lighting first so the freshwater shader can gate its
+  // specular reflection blobs on uSunIntensity (no sun = no reflections,
+  // matches real-world physics + the user's "qui apparaît pas la nuit"
+  // note).
   const lighting = computeTimeOfDay(params.timeOfDay);
+  updateFreshwaterStylizedMaterial(island.freshwater.material, elapsed, lighting.sunIntensity);
+  updateWaterfallStylizedMaterial(island.waterfalls.material, elapsed);
+  updateWaterfallSplashMaterial(island.waterfallSplashes.material, elapsed);
+  updateWaterfallMistMaterial(island.waterfallMist.material, elapsed);
+  updateTerrainSplatMaterial(island.ground.material, elapsed);
 
   const sunDistance = 40;
   const minSunY = 0.47;
