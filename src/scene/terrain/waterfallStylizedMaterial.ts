@@ -179,25 +179,30 @@ droplet = smoothstep(0.94, 1.0, droplet) * 0.6;
 float topDistance = vDropMeters - dropV;
 float crestFoam = smoothstep(0.14, 0.0, topDistance);
 
-// Pool froth — bottom 30 cm has a turbulent bright-white splash pattern.
-// Two animated foam noise layers churning at different speeds simulate the
-// "splash" where the cascade hits the pool. The poolFroth envelope gives
-// it a soft fade upward so the splash blends into the regular cascade
-// streaks rather than cutting hard at 30 cm.
-float poolFroth = smoothstep(0.30, 0.0, dropV);
-vec2 froth1 = vec2(spanW * 6.0, dropV * 8.0 + uTime * 1.4);
-vec2 froth2 = vec2(spanW * 14.0 - 3.7, dropV * 3.0 - uTime * 2.1);
+// Pool froth — bottom 50 cm: bright animated splash where the cascade
+// hits the pool. Three layers stacked:
+//   - foamPulse: cell-noise bubbles that pop on/off at different freqs
+//   - horizPulse: horizontal "ripple bands" that scroll outward from the
+//     base, simulating the radial spray spreading across the pool. Faster
+//     pulse rate so the eye reads it as a constant churn even on stills.
+//   - the envelope is now a SOFTER fade so the splash extends visibly
+//     upward 50 cm into the cascade body.
+float poolFroth = smoothstep(0.50, 0.0, dropV);
+vec2 froth1 = vec2(spanW * 6.0, dropV * 8.0 + uTime * 2.4);
+vec2 froth2 = vec2(spanW * 14.0 - 3.7, dropV * 3.0 - uTime * 3.1);
 float foamPulse1 = wfHash(floor(froth1));
 float foamPulse2 = wfHash(floor(froth2));
 float foamPulse = max(
-  smoothstep(0.65, 1.0, foamPulse1),
-  smoothstep(0.72, 1.0, foamPulse2)
+  smoothstep(0.55, 1.0, foamPulse1),
+  smoothstep(0.62, 1.0, foamPulse2)
 );
-float splash = poolFroth * (0.50 + foamPulse * 0.50);
+float horizPulse = sin(spanW * 22.0 + dropV * 5.0 - uTime * 6.0) * 0.5 + 0.5;
+horizPulse *= sin(dropV * 18.0 + uTime * 4.0) * 0.5 + 0.5;
+float splash = poolFroth * (0.55 + foamPulse * 0.45 + horizPulse * 0.35);
 
 vec3 streakColor = vec3(0.97, 0.99, 1.00);
 vec3 waterfallColor = mix(baseColor, streakColor, streakAmount);
 waterfallColor = mix(waterfallColor, streakColor, droplet);
 waterfallColor = mix(waterfallColor, vec3(1.0), crestFoam * 0.58);
-waterfallColor = mix(waterfallColor, vec3(1.0), splash * 0.78);
+waterfallColor = mix(waterfallColor, vec3(1.0), clamp(splash, 0.0, 1.0) * 0.92);
 `;

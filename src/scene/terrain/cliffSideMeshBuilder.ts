@@ -1,7 +1,6 @@
 import * as THREE from 'three';
 import type { SurfaceTextureSet } from '../proceduralTextures';
 import {
-  FRESHWATER_SURFACE_OFFSET_METERS,
   Surface,
   Tier,
   tierHeight,
@@ -108,22 +107,17 @@ const CLIFF_FRAGMENT_BODY = /* glsl */`
     float worldY = vCliffWorldPos.y;
     float height01 = clamp(vMapUv.y, 0.0, 1.0);
 
-    // 3-octave FBM color variation, Y-BIASED so noise creates HORIZONTAL
-    // bands (sedimentary rock look) rather than the vertical-stripe wood
-    // look. Y freqs (3.0, 5.5, 9.0) are 4-5x the X freqs (0.7, 1.4, 2.5),
-    // so adjacent Y-rows differ a lot but adjacent X-columns stay similar —
-    // the opposite of the previous version that had X-biased stripes.
-    float n1 = cliffNoise(vec2(along * 0.7, worldY * 3.0));
-    float n2 = cliffNoise(vec2(along * 1.4 + 17.3, worldY * 5.5 - 4.2));
-    float n3 = cliffNoise(vec2(along * 2.5 - 9.1, worldY * 9.0 + 2.8));
+    // 3-octave FBM color variation, ISOTROPIC (matched X/Y frequencies)
+    // so the base noise reads as random rocky blobs instead of biasing
+    // toward either horizontal bands (the previous Y-biased "trait
+    // horizontal" complaint) or vertical stripes (wood look). The
+    // VISIBLE pattern is the vertical cracks below — the noise just
+    // gives the wall a non-uniform background.
+    float n1 = cliffNoise(vec2(along * 1.8, worldY * 1.8));
+    float n2 = cliffNoise(vec2(along * 3.5 + 17.3, worldY * 3.5 - 4.2));
+    float n3 = cliffNoise(vec2(along * 6.5 - 9.1, worldY * 6.5 + 2.8));
     float colorVar = clamp(n1 * 0.55 + n2 * 0.30 + n3 * 0.15, 0.0, 1.0);
-
-    // Subtle horizontal stratum lines: thin darker bands every ~30 cm
-    // vertically with noise-jittered Y position. Reinforces the rock-
-    // layer look on top of the Y-biased noise.
-    float stratumY = worldY + cliffNoise(vec2(along * 0.7, worldY * 0.3)) * 0.12;
-    float stratum = abs(fract(stratumY * 3.3) - 0.5);
-    float stratumDark = smoothstep(0.45, 0.50, stratum) * 0.18;
+    float stratumDark = 0.0;
 
     // Vertical cracks, IMPERFECT and VISIBLE. Per ACNH reference: imperfect
     // lines, varying thickness, curved, "craquelé" look. 5 cracks per wall,
@@ -242,24 +236,17 @@ export function buildCliffSideMesh(
     void isBeachToGrassRamp;
 
     if (lowerCell.surface === Surface.FRESHWATER) {
-      // Cap bank top at the water surface (tier - SURFACE_OFFSET) instead
-      // of running it up to the upper LAND grass top. Otherwise the
-      // 30 cm strip of bank between the water surface and the surrounding
-      // grass top reads as a brown notch above the cascade ("y'a tjr un
-      // creux") and as a brown rim around every pond viewed from above.
-      const lowerY = grid.cellHeight(lowerCx, lowerCz);
-      const waterY = tierHeight(lowerCell.tier) - FRESHWATER_SURFACE_OFFSET_METERS;
-      const bankDrop = Math.min(drop, waterY - lowerY);
-      if (bankDrop > 0.001) {
-        const main = buildSlopedWallGeometry(
-          grid, lowerCx, lowerCz, dx, dz, bankDrop, SLOPE_OFFSET_RIVER_BANK,
-        );
-        riverBankGeometries.push(main);
-        for (const tri of buildWallSideClosureGeometries(
-          grid, lowerCx, lowerCz, dx, dz, bankDrop, SLOPE_OFFSET_RIVER_BANK,
-        )) {
-          riverBankGeometries.push(tri);
-        }
+      // Bank from upper LAND grass top down to the FW bed (full 50 cm
+      // for T1). The 30 cm of bank visible above the water surface is
+      // intentional — gives the river the depth-feel the user asked for.
+      const main = buildSlopedWallGeometry(
+        grid, lowerCx, lowerCz, dx, dz, drop, SLOPE_OFFSET_RIVER_BANK,
+      );
+      riverBankGeometries.push(main);
+      for (const tri of buildWallSideClosureGeometries(
+        grid, lowerCx, lowerCz, dx, dz, drop, SLOPE_OFFSET_RIVER_BANK,
+      )) {
+        riverBankGeometries.push(tri);
       }
       return;
     }
