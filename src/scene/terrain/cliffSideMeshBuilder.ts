@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import type { SurfaceTextureSet } from '../proceduralTextures';
 import {
+  FRESHWATER_SURFACE_OFFSET_METERS,
   Surface,
   Tier,
   tierHeight,
@@ -107,47 +108,46 @@ const CLIFF_FRAGMENT_BODY = /* glsl */`
     float worldY = vCliffWorldPos.y;
     float height01 = clamp(vMapUv.y, 0.0, 1.0);
 
-    // 3-octave FBM color variation, X-biased so the noise reads as
-    // HORIZONTAL stratification rather than vertical streaks. X freqs are
-    // 3-5x the Y freqs, which on a 1 m × 1.4 m+ cliff produces wider
-    // horizontal blobs and short vertical extents — opposite of the
-    // wood-plank look the user reported. A matched X/Y pair (1.1, 1.1)
-    // still read as wood because tall walls have a larger Y range than
-    // the 1 m cell width and the noise stretched that way.
-    float n1 = cliffNoise(vec2(along * 3.5, worldY * 0.9));
-    float n2 = cliffNoise(vec2(along * 6.5 + 17.3, worldY * 1.7 - 4.2));
-    float n3 = cliffNoise(vec2(along * 11.0 - 9.1, worldY * 3.0 + 2.8));
+    // 3-octave FBM color variation, Y-BIASED so noise creates HORIZONTAL
+    // bands (sedimentary rock look) rather than the vertical-stripe wood
+    // look. Y freqs (3.0, 5.5, 9.0) are 4-5x the X freqs (0.7, 1.4, 2.5),
+    // so adjacent Y-rows differ a lot but adjacent X-columns stay similar —
+    // the opposite of the previous version that had X-biased stripes.
+    float n1 = cliffNoise(vec2(along * 0.7, worldY * 3.0));
+    float n2 = cliffNoise(vec2(along * 1.4 + 17.3, worldY * 5.5 - 4.2));
+    float n3 = cliffNoise(vec2(along * 2.5 - 9.1, worldY * 9.0 + 2.8));
     float colorVar = clamp(n1 * 0.55 + n2 * 0.30 + n3 * 0.15, 0.0, 1.0);
 
     // Subtle horizontal stratum lines: thin darker bands every ~30 cm
-    // vertically with noise-jittered Y position. Reads as sedimentary
-    // rock layers, breaks any residual vertical look.
+    // vertically with noise-jittered Y position. Reinforces the rock-
+    // layer look on top of the Y-biased noise.
     float stratumY = worldY + cliffNoise(vec2(along * 0.7, worldY * 0.3)) * 0.12;
     float stratum = abs(fract(stratumY * 3.3) - 0.5);
     float stratumDark = smoothstep(0.45, 0.50, stratum) * 0.18;
 
-    // Vertical cracks (matching ACNH reference) but explicitly IMPERFECT:
-    // SHORT (10-25 cm), varied thickness (0.5-2 cm), curved by noise of
-    // worldY. Cracks were previously up to 90 cm tall — that read as wood
-    // plank seams. The new lengths put 4-6 short cracks scattered across
-    // a 1.4 m wall instead of 1-2 long runners.
+    // Vertical cracks, IMPERFECT and VISIBLE. Per ACNH reference: imperfect
+    // lines, varying thickness, curved, "craquelé" look. 5 cracks per wall,
+    // each 16-50 cm tall (full length), 1-4 cm thick, 30-55 % darkening so
+    // they actually read as cracks against the brown rock instead of being
+    // diluted into invisibility.
     float fissure = 0.0;
-    for (int k = 0; k < 3; k++) {
+    for (int k = 0; k < 5; k++) {
       float fk = float(k);
       float seedX = cliffNoise(vec2(fk * 13.7, fk * 21.3));
       float fx    = floor(along * 0.85 + seedX * 7.0) / 0.85;
       float xOff  = (cliffNoise(vec2(floor(along * 0.85 + seedX * 7.0), fk * 5.3)) - 0.5) * 0.55;
       float xCenter = fx + xOff;
 
-      float crackJitter = (cliffNoise(vec2(worldY * 1.3 + fk * 11.0, fx * 0.4)) - 0.5) * 0.05;
+      // Curve: xCenter wobbles by noise of worldY, ~8 cm peak.
+      float crackJitter = (cliffNoise(vec2(worldY * 1.3 + fk * 11.0, fx * 0.4)) - 0.5) * 0.08;
       float xEffective = xCenter + crackJitter;
 
       float ySeed   = cliffNoise(vec2(floor(along * 0.85 + seedX * 7.0) + 7.0, fk * 9.1));
       float yCenter = ySeed * 3.5 - 1.0 + worldY - mod(worldY, 1.4);
-      float yHalf   = 0.05 + ySeed * 0.10;
+      float yHalf   = 0.08 + ySeed * 0.17;     // 16-50 cm full length
 
       float thickSeed = cliffNoise(vec2(worldY * 1.7 + fk * 4.0, xCenter * 0.6));
-      float halfThickness = 0.005 + thickSeed * 0.015;
+      float halfThickness = 0.005 + thickSeed * 0.020;  // 1-4 cm
 
       float dX = abs(along - xEffective);
       float dY = abs(worldY - yCenter);
@@ -155,7 +155,7 @@ const CLIFF_FRAGMENT_BODY = /* glsl */`
       float coreY = smoothstep(yHalf, yHalf * 0.6, dY);
       float core  = coreX * coreY;
       float topFade = 1.0 - smoothstep(0.86, 1.0, height01);
-      fissure = max(fissure, core * topFade * (0.20 + thickSeed * 0.20));
+      fissure = max(fissure, core * topFade * (0.30 + thickSeed * 0.25));
     }
 
     float bottomShadow = 1.0 - smoothstep(0.08, 0.55, height01);
@@ -242,14 +242,24 @@ export function buildCliffSideMesh(
     void isBeachToGrassRamp;
 
     if (lowerCell.surface === Surface.FRESHWATER) {
-      const main = buildSlopedWallGeometry(
-        grid, lowerCx, lowerCz, dx, dz, drop, SLOPE_OFFSET_RIVER_BANK,
-      );
-      riverBankGeometries.push(main);
-      for (const tri of buildWallSideClosureGeometries(
-        grid, lowerCx, lowerCz, dx, dz, drop, SLOPE_OFFSET_RIVER_BANK,
-      )) {
-        riverBankGeometries.push(tri);
+      // Cap bank top at the water surface (tier - SURFACE_OFFSET) instead
+      // of running it up to the upper LAND grass top. Otherwise the
+      // 30 cm strip of bank between the water surface and the surrounding
+      // grass top reads as a brown notch above the cascade ("y'a tjr un
+      // creux") and as a brown rim around every pond viewed from above.
+      const lowerY = grid.cellHeight(lowerCx, lowerCz);
+      const waterY = tierHeight(lowerCell.tier) - FRESHWATER_SURFACE_OFFSET_METERS;
+      const bankDrop = Math.min(drop, waterY - lowerY);
+      if (bankDrop > 0.001) {
+        const main = buildSlopedWallGeometry(
+          grid, lowerCx, lowerCz, dx, dz, bankDrop, SLOPE_OFFSET_RIVER_BANK,
+        );
+        riverBankGeometries.push(main);
+        for (const tri of buildWallSideClosureGeometries(
+          grid, lowerCx, lowerCz, dx, dz, bankDrop, SLOPE_OFFSET_RIVER_BANK,
+        )) {
+          riverBankGeometries.push(tri);
+        }
       }
       return;
     }
